@@ -1,4 +1,6 @@
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
+import warnings
+warnings.filterwarnings('ignore', category=MarkupResemblesLocatorWarning)
 import re
 import os
 import phonenumbers
@@ -8,14 +10,59 @@ from calendar import timegm
 import warnings
 import base64
 from io import open # adds emoji support
+import json
 
-me = '+11111111111' # enter phone number
+# We need *your* phone number (complete with "+" and country code). If you don't
+# want to edit this script in this "me" assignment, you can instead create a
+# pseudo entry in the "contacts" stuff below. (And if you do that and use the
+# separate file, you won't have to edit this script.) The entry must have the contact name
+# ".me" (that is, a period followed by the lower case letters "m" and "e"). If that
+# is found, it will replace the value from the assignment on the next line.
+me = '+1111111111' # enter phone number
 
-sms_backup_filename = "./gvoice-all.xml"
+# SMS Backup and Restore likes to notice filename that start with "sms-"
+# Save it to the great-grandparent directory because it can otherwise be hard to find amongst
+# the zillion HTML files. The great-grandparent directory is the one that contains
+# "Takeout" as a subdirectory, and you should run this script from the
+# Takeout/Voice/Calls subdirectory.
+
+sms_backup_filename = "../../../sms-gvoice-all.xml"
+
+# We sometimes see isolated messages from ourselves to someone, and the Takeout format
+# only identifies them by contact name instead of phone number. In such cases, we
+# consult this optional JSON file to map  the name to a phone number (which should
+# include the "+" and country code and no other punctuation). Must be valid JSON, eg:
+# {
+#   ".me": "+441234567890",
+#   "Joe Blow": "+18885551234",
+#   "Susie Glow": "+18885554321"
+# }
+# In cases where there is no JSON entry when needed, a warning is printed. Update
+# the JSON file and re-run this script. Don't try to restore with the output
+# file until you have resolved all of those contacts warnings.
+
+# This file is *optional*, and you can just put your data directly into the "contacts = json.loads('{}')
+# line below if you feel like it.
+contact_number_file = "../../../contacts.json"
+
 print('New file will be saved to ' + sms_backup_filename)
 
+contacts = json.loads('{}')
+
+# this is for some internal bookkeeping; you don't need to do anything with it.
+missing_contacts = json.loads('{}')
+
+if os.path.exists(contact_number_file):
+    with open(contact_number_file) as cnf: 
+        cn_data = cnf.read() 
+        contacts = json.loads(cn_data)
+        print('Consulting contacts file ' + contact_number_file)
+
+me = contacts.get(".me", me)
+print('Your "me" number is ' + me)
+
 def main():
-    print('Checking directory for *.html files')
+    print('Checking directory for *.html SMS/MMS files')
     num_sms = 0
     root_dir = '.'
 
@@ -24,29 +71,41 @@ def main():
             sms_filename = os.path.join(subdir, file)
 
             try:
-                sms_file = open(sms_filename, 'r', encoding="cp850")
+                # Original had cp850 (Latin-1), but these are XML files encoded with UTF-8
+                sms_file = open(sms_filename, 'r', encoding="utf-8")
             except FileNotFoundError:
                 continue
 
             if(os.path.splitext(sms_filename)[1] != '.html'):
                 # print(sms_filename,"- skipped")
                 continue
+            if re.search(r' - Missed|Placed|Received|Voicemail - ', sms_filename):  # various voice things
+                continue
 
-            print('Processing ' + sms_filename)
+            # printing this just adds clutter, making you miss any interesting output
+            # print('Processing ' + sms_filename)
 
             is_group_conversation = re.match(r'(^Group Conversation)', file)
 
             soup = BeautifulSoup(sms_file, 'html.parser')
 
             messages_raw = soup.find_all(class_='message')
+            title_whole = soup.find('title').get_text().strip()
+            if re.match(r'(^Placed call to)', title_whole):
+                # this is a call log, not a message
+                continue
+            
+            correspondent = title_whole
+            if re.match(r'(^Me to)', title_whole):  # no, no, not "#Metoo" :-)
+                correspondent = title_whole[5:].strip()
 
             num_sms += len(messages_raw)
 
             if is_group_conversation:
                 participants_raw = soup.find_all(class_='participants')
-                write_mms_messages(participants_raw, subdir, messages_raw)
+                write_mms_messages(participants_raw, subdir, messages_raw, sms_filename, correspondent)
             else:
-                write_sms_messages(file, subdir, messages_raw)
+                write_sms_messages(file, subdir, messages_raw, sms_filename, correspondent)
 
 
     sms_backup_file = open(sms_backup_filename, 'a')
@@ -55,13 +114,22 @@ def main():
 
     write_header(sms_backup_filename, num_sms)
 
-def write_sms_messages(file, subdir, messages_raw):
+
+def contact_name_to_number(contact_name):
+    contact_number = contacts.get(contact_name, "0")
+    if contact_number == "0" and missing_contacts.get(contact_name, "X") == "X":
+        print(contact_number_file + ': add a phone number for contact "' + contact_name + '": "",')
+        # we add this fake entry to a dictionary so we don't keep complaining about the same thing
+        missing_contacts[contact_name] = "0"
+    return contact_number
+
+def write_sms_messages(file, subdir, messages_raw, sms_filename, correspondent):
     fallback_number = 0
     title_has_number = re.search(r"(^\+*[0-9]+)", file)
     if title_has_number:
         fallback_number = title_has_number.group()
 
-    sms_values = {'participants' : get_first_phone_number(messages_raw, fallback_number)}
+    sms_values = {'participants' : get_first_phone_number(messages_raw, fallback_number, correspondent)}
 
     sms_backup_file = open(sms_backup_filename, 'a')
     for i in range(len(messages_raw)):
@@ -73,6 +141,7 @@ def write_sms_messages(file, subdir, messages_raw):
                     'subject="null" body="%(message)s" '
                     'toa="null" sc_toa="null" service_center="null" '
                     'read="1" status="1" locked="0" /> \n' % sms_values)
+        sms_backup_file.write("<!-- file: '" + sms_filename + "' -->\n")
         sms_backup_file.write(sms_text)
         write_img_attachment(messages_raw[i],subdir,sms_backup_file,sms_values)
 
@@ -120,16 +189,16 @@ def write_img_attachment(message,subdir,sms_backup_file,mms_values,participants=
         return False
 
 
-def write_mms_messages(participants_raw, subdir, messages_raw):
+def write_mms_messages(participants_raw, subdir, messages_raw, sms_filename, correspondent):
     sms_backup_file = open(sms_backup_filename, 'a')
 
-    participants = get_participant_phone_numbers(participants_raw)
+    participants = get_participant_phone_numbers(participants_raw, correspondent)
     mms_values = {'participants' : '~'.join(participants)}
 
     participants.append(me)
 
     for i in range(len(messages_raw)):
-        sender = get_mms_sender(messages_raw[i])
+        sender = get_mms_sender(messages_raw[i], correspondent)
         sent_by_me = sender not in participants
 
         mms_values['type'] = get_message_type(messages_raw[i])
@@ -150,6 +219,7 @@ def write_mms_messages(participants_raw, subdir, messages_raw):
                     '  </addrs> \n'
                     '</mms> \n' % mms_values)
 
+        sms_backup_file.write("<!-- file: '" + sms_filename + "' -->\n")
         sms_backup_file.write(mms_text)
         write_img_attachment(messages_raw[i],subdir,sms_backup_file,mms_values,participants)
         
@@ -175,10 +245,20 @@ def get_message_type(message): # author_raw = messages_raw[i].cite
 def get_message_text(message):
     return BeautifulSoup(message.find('q').text,'html.parser').prettify(formatter='html').strip().replace('"',"'")
 
-def get_mms_sender(message):
-    return format_number(phonenumbers.parse(message.cite.a['href'][4:], None))
+def get_mms_sender(message, correspondent):
+    number = format_number(phonenumbers.parse(message.cite.a['href'][4:], None))
+    if number is None:
+        number = contact_name_to_number(correspondent)
+    else:
+        fn_raw = message.cite.span
+        if fn_raw is not None:
+            fn = fn_raw.get_text().strip()
+            if fn != ""  and contacts.get(fn, None) is None:
+                contacts[fn] = number # for future reference
 
-def get_first_phone_number(messages, fallback_number):
+    return number
+    
+def get_first_phone_number(messages, fallback_number, correspondent):
     # handle group messages
     for author_raw in messages:
         if (not author_raw.span):
@@ -187,7 +267,15 @@ def get_first_phone_number(messages, fallback_number):
         sender_data = author_raw.cite
 
         try:
-            phone_number = phonenumbers.parse(sender_data.a['href'][4:], None)
+            raw_number = sender_data.a['href'][4:]
+            if raw_number == "" or raw_number is None:
+                raw_number = contact_name_to_number(correspondent)
+            else:
+                fn = sender_data.span.get_text().strip()
+                if fn != ""  and contacts.get(fn, None) is None:
+                    contacts[fn] = raw_number # for future reference
+                
+            phone_number = phonenumbers.parse(raw_number, None)
         except phonenumbers.phonenumberutil.NumberParseException:
             return sender_data.a['href'][4:]
 
@@ -195,11 +283,12 @@ def get_first_phone_number(messages, fallback_number):
 
     # fallback case, use number from filename
     if (fallback_number == 0 or len(fallback_number) < 7):
+        fallback_number = contact_name_to_number(correspondent)
         return fallback_number
     else:
         return format_number(phonenumbers.parse(fallback_number, None))
 
-def get_participant_phone_numbers(participants_raw):
+def get_participant_phone_numbers(participants_raw, correspondent):
     #participants = [me] # May require adding a contact for "Me" to your phone, with your current number
 
     participants = []
@@ -210,12 +299,18 @@ def get_participant_phone_numbers(participants_raw):
                 continue
 
             try:
-                phone_number = phonenumbers.parse(participant.a['href'][4:], None)
+                raw_number = participant.a['href'][4:]
+                if raw_number == "" or raw_number is None:
+                    raw_number = contact_name_to_number(correspondent)
+                phone_number = phonenumbers.parse(raw_number, None)
             except phonenumbers.phonenumberutil.NumberParseException:
                 participants.push(participant.a['href'][4:])
 
             participants.append(format_number(phone_number))
 
+    if participants == []:
+        participants.push(contact_name_to_number(correspondent))
+                
     return participants
 
 def format_number(phone_number):
