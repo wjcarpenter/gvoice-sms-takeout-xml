@@ -187,6 +187,7 @@ def write_img_attachment(message,subdir,sms_backup_file,mms_values,participants=
                     'date="%(time)s" m_type="%(m_type)s" msg_box="%(type)s" read="1" '
                     'rr="129" seen="1" sub_id="-1" text_only="1"> \n'
                     '  <parts> \n'
+                    + "    <!-- file: '" + os.path.abspath(img_file_full_path) + "' -->\n" +
                     '    <part seq="0" ct="image/jpeg" name="%(img_file)s" chset="null" cd="null" fn="null" cid="&lt;0&gt;" cl="%(img_file)s" ctt_s="null" ctt_t="null" text="null" sef_type="0" data="%(img_data)s"/> \n'
                     '  </parts> \n'
                     '  <addrs> \n'
