@@ -17,19 +17,19 @@ SMS Backup and Restore is pretty good at duplicate detection, but if you make a 
 
 # HOW TO USE THIS SCRIPT
 
-- Save sms.py in some convenient location. Let's call that location "/some/bin/sms.py". It is a python script that requires Python 3.
-- Use Google Takeout to download Google Voice messages. That will give you a file named "takeout-something-something.zip".
-- Unpack that ZIP file in some convenient location. Let's call that location "/someplace/t/". The Google Voice files will be in a directory "Takeout/Voice/Calls/", aka "/someplace/t/Takeout/Voice/Calls/".
-- Create a text file in JSON format at "/someplace/t/contact.json" with one entry:
+- Save sms.py in some convenient location. Let's call that location `/some/bin/sms.py`. It is a python script that requires Python 3.
+- Use Google Takeout to download Google Voice messages. That will give you a file named `takeout-`_something-something_`.zip`.
+- Unpack that ZIP file in some convenient location. Let's call that location `/someplace/t/`. The Google Voice files will be in a directory `Takeout/Voice/Calls/`, aka `/someplace/t/Takeout/Voice/Calls/`.
+- Create a text file in JSON format at `/someplace/t/contacts.json` with one entry:
 ```
 {
   ".me": "+441234567890"
 }
 ```
-- Change the phone number in that ".me" entry to your own phone number. Include the "+" and your country code. No other punctuation.
-- In a terminal window, go to directory "/someplace/t/Takeout/Voice/Calls/".
-- Run the python script, for example, "python3 /some/bin/sms.py".
-- If you get python errors, it is most likely because you are missing some of the imported modules. Use PIP to install them until python stops complaining. For example, "pip install bs4".
+- Change the phone number in that `.me` entry to your own phone number. Include the `+` and your country code. No other punctuation.
+- In a terminal window, go to directory `/someplace/t/Takeout/Voice/Calls/`.
+- Run the python script, for example, `python /some/bin/sms.py` or `python3 /some/bin/sms.py`.
+- If you get python errors, it is most likely because you are missing some of the imported modules. Use PIP to install them until python stops complaining. For example, `pip install bs4`.
 - When the script starts running correctly, it will announce the locations of inputs and outputs and other helpful information.
 - It is as likely as not that you will have some SMS/MMS messages for which the script cannot figure out the contact phone number. That's because of the Takeout format. The script tries hard, but if it can't figure it out, it tells you with messages like this:
 ```
@@ -44,6 +44,6 @@ SMS Backup and Restore is pretty good at duplicate detection, but if you make a 
   "Joe Blow": "+18885551234"
 }
 ```
-- Add the contact name exactly as shown in the warning message. Don't forget to include the "+" and the country code with the phone number. The order of items in that file doesn't matter, but the python JSON parser requires a comma after each item except the final one.
+- Add the contact name exactly as shown in the warning message. Don't forget to include the `+` and the country code with the phone number. The order of items in that file doesn't matter, but the python JSON parser requires a comma after each item except the final one.
 - Rerun the script until you get no errors and no warnings about missing contact phone numbers.
 - You can now use the resulting output file as a backup file to be restored with the SMS Backup and Restore app (https://play.google.com/store/apps/details?id=com.riteshsahu.SMSBackupRestore)
