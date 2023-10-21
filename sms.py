@@ -27,6 +27,7 @@ me = '+1111111111' # enter phone number
 # Takeout/Voice/Calls subdirectory.
 
 sms_backup_filename = "../../../sms-gvoice-all.xml"
+sms_backup_filename_BAK = "../../../sms-gvoice-all.xml.BAK"
 
 # We sometimes see isolated messages from ourselves to someone, and the Takeout format
 # only identifies them by contact name instead of phone number. In such cases, we
@@ -45,7 +46,16 @@ sms_backup_filename = "../../../sms-gvoice-all.xml"
 # line below if you feel like it.
 contact_number_file = "../../../contacts.json"
 
-print('New file will be saved to ' + sms_backup_filename)
+if os.path.exists(sms_backup_filename):
+    if os.path.exists(sms_backup_filename_BAK):
+        print('Removing ' + sms_backup_filename_BAK)
+        os.remove(sms_backup_filename_BAK)
+    print('Renaming existing output file to ' + sms_backup_filename_BAK)
+    print('  aka ' + os.path.abspath(sms_backup_filename_BAK))
+    os.rename(sms_backup_filename, sms_backup_filename_BAK)
+    
+print('Output will be saved to ' + sms_backup_filename)
+print('  aka ' + os.path.abspath(sms_backup_filename))
 
 contacts = json.loads('{}')
 
@@ -56,13 +66,17 @@ if os.path.exists(contact_number_file):
     with open(contact_number_file) as cnf: 
         cn_data = cnf.read() 
         contacts = json.loads(cn_data)
-        print('Consulting contacts file ' + contact_number_file)
+        print('Consulting JSON contacts file ' + contact_number_file)
+else:
+        print('No (optional) JSON contacts file ' + contact_number_file)
+
+print('  aka ' + os.path.abspath(contact_number_file))
 
 me = contacts.get(".me", me)
 print('Your "me" number is ' + me)
 
 def main():
-    print('Checking directory for *.html SMS/MMS files')
+    print('Checking ' + os.getcwd() + ' for SMS/MMS *.html files')
     num_sms = 0
     root_dir = '.'
 
@@ -118,7 +132,7 @@ def main():
 def contact_name_to_number(contact_name):
     contact_number = contacts.get(contact_name, "0")
     if contact_number == "0" and missing_contacts.get(contact_name, "X") == "X":
-        print(contact_number_file + ': add a phone number for contact "' + contact_name + '": "",')
+        print(contact_number_file + ': TODO: add a +phonenumber for contact: "' + contact_name + '": "+",')
         # we add this fake entry to a dictionary so we don't keep complaining about the same thing
         missing_contacts[contact_name] = "0"
     return contact_number
@@ -141,7 +155,7 @@ def write_sms_messages(file, subdir, messages_raw, sms_filename, correspondent):
                     'subject="null" body="%(message)s" '
                     'toa="null" sc_toa="null" service_center="null" '
                     'read="1" status="1" locked="0" /> \n' % sms_values)
-        sms_backup_file.write("<!-- file: '" + sms_filename + "' -->\n")
+        sms_backup_file.write("<!-- file: '" + os.path.abspath(sms_filename) + "' -->\n")
         sms_backup_file.write(sms_text)
         write_img_attachment(messages_raw[i],subdir,sms_backup_file,sms_values)
 
