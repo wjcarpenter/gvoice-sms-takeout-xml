@@ -5,7 +5,7 @@ This is a personal project from a few years back when Google switched Voice to H
 
 Input data is a folder of SMS .html files from Google Takeout.
 
-# This fork
+## This fork
 This is a fork of https://github.com/karlrees/gvoice-sms-takeout-xml,
 which was itself a fork of https://github.com/calyptecc/gvoice-sms-takeout-xml.
 Although I have made a huge number of changes, so that it does not look much like the originals any more,
@@ -30,7 +30,7 @@ and restore again.
 Otherwise, a lot of MMS attachments will be detected as duplicates and will never restore properly. 
 (I had 300-400 of those out of 25,000 SMS/MMS messages, and it was a big puzzle to figure it out.)
 
-# HOW TO USE THIS SCRIPT
+## HOW TO USE THIS SCRIPT
 
 - Save sms.py in some convenient location. Let's call that location `/some/bin/sms.py`. It is a python script that requires Python 3.
 - Use Google Takeout to download Google Voice messages. That will give you a file named `takeout-`_something-something_`.zip`.
