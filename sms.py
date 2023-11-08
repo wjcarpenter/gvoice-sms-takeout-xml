@@ -1,25 +1,19 @@
 from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
 import warnings
 warnings.filterwarnings('ignore', category=MarkupResemblesLocatorWarning)
+from bs4.formatter import XMLFormatter, Formatter, HTMLFormatter
+from bs4.element import Comment
+from bs4.dammit import EntitySubstitution
 import re
 import os
 import phonenumbers
 import dateutil.parser
-import time, datetime
+import datetime
 from calendar import timegm
-import warnings
 import base64
 from io import open # adds emoji support
 import json
 import isodate
-
-# We need *your* phone number (complete with "+" and country code). If you don't
-# want to edit this script in this "me" assignment, you can instead create a
-# pseudo entry in the "contacts" stuff below. (And if you do that and use the
-# separate file, you won't have to edit this script.) The entry must have the contact name
-# ".me" (that is, a period followed by the lower case letters "m" and "e"). If that
-# is found, it will replace the value from the assignment on the next line.
-me = '+1111111111' # enter phone number
 
 # SMS Backup and Restore likes to notice filename that start with "sms-"
 # Save it to the great-grandparent directory because it can otherwise be hard to find amongst
@@ -28,18 +22,15 @@ me = '+1111111111' # enter phone number
 # Takeout/Voice/Calls subdirectory.
 
 sms_backup_filename      = "../../../sms-gvoice-all.xml"
-sms_backup_filename_BAK  = "../../../sms-gvoice-all.xml.BAK"
 call_backup_filename     = "../../../calls-gvoice-all.xml"
-call_backup_filename_BAK = "../../../calls-gvoice-all.xml.BAK"
 vm_backup_filename       = "../../../sms-vm-gvoice-all.xml"
-vm_backup_filename_BAK   = "../../../sms-vm-gvoice-all.xml.BAK"
 
 # We sometimes see isolated messages from ourselves to someone, and the Takeout format
 # only identifies them by contact name instead of phone number. In such cases, we
 # consult this optional JSON file to map  the name to a phone number (which should
 # include the "+" and country code and no other punctuation). Must be valid JSON, eg:
 # {
-#   ".me": "+441234567890",
+#   "me": "+441234567890",
 #   "Joe Blow": "+18885551234",
 #   "Susie Glow": "+18885554321"
 # }
@@ -47,14 +38,13 @@ vm_backup_filename_BAK   = "../../../sms-vm-gvoice-all.xml.BAK"
 # the JSON file and re-run this script. Don't try to restore with the output
 # file until you have resolved all of those contacts warnings.
 
-# This file is *optional*, and you can just put your data directly into the "contacts = json.loads('{}')
-# line below if you feel like it.
+# This file is *optional*
 contact_number_file = "../../../contacts.json"
-contacts = json.loads('{}')
+contacts = dict()
 
 # this is for some internal bookkeeping; you don't need to do anything with it.
-missing_contacts = json.loads('{}')
-me = ""
+missing_contacts = set()
+me = None
 
 # some global counters
 num_sms = 0
@@ -63,32 +53,33 @@ num_vms = 0
 
 # I really don't like globals, but there are just too many things to tote around in all these function calls.
 subdir = None
-filename_basename = None
-filename_rel_path = None
-filename_abs_path = None
+html_filename_basename = None
+html_filename_rel_path = None
+html_filename_abs_path = None
 filename_phone_number = None
 filename_contact_name = None
 title_phone_number = None
 title_contact_name = None
-first_vcard_number = None
 html_elt = None
 
 def main():
-    global filename_basename, filename_rel_path, filename_abs_path, subdir
+    global html_filename_basename, html_filename_rel_path, html_filename_abs_path, subdir
     global html_elt
     prep_output_files()
-    print('Checking', os.getcwd(),'for *.html files')
+    print('>> Reading *.html files under', os.getcwd())
     come_back_later = []
     write_dummy_headers()
 
     for subdir, dirs, files in os.walk("."):
-        for filename_basename in files:
+        for html_filename_basename in files:
             process_one_file(True, come_back_later)
 
     if not me and come_back_later:
         print("Unfortunately, we can't figure out your own phone number.")
+        print(os.path.abspath(contact_number_file) + ': TODO: add a +phonenumber for contact: "me": "+",')
     else:
-        for subdir, filename_basename in come_back_later:
+        print(">> Your 'me' phone number is", me)
+        for subdir, html_filename_basename in come_back_later:
             process_one_file(False, come_back_later)
 
     sms_backup_file = open(sms_backup_filename, 'a'); sms_backup_file.write(u'</smses>\n'); sms_backup_file.close()
@@ -97,113 +88,53 @@ def main():
     write_real_headers()
 
 def process_one_file(first_pass, come_back_later):
-    global filename_rel_path, filename_abs_path
+    global html_filename_rel_path, html_filename_abs_path
     global html_elt
-    filename_rel_path = os.path.join(subdir, filename_basename)
+    html_filename_rel_path = os.path.join(subdir, html_filename_basename)
+    html_file = open(html_filename_rel_path, 'r', encoding="utf-8")
 
-    html_file = open(filename_rel_path, 'r', encoding="utf-8")
-    if not filename_basename.endswith('.html'): return
-    name_or_number_from_filename()
-    filename_abs_path = os.path.abspath(filename_rel_path)
+    if not html_filename_basename.endswith('.html'): return
+    get_name_or_number_from_filename()
+    html_filename_abs_path = os.path.abspath(html_filename_rel_path)
     html_elt = BeautifulSoup(html_file, 'html.parser')
-    name_or_number_from_title()
+    get_name_or_number_from_title()
 
     tags_div = html_elt.body.find(class_='tags')
     tag_elts = tags_div.find_all(rel='tag')
-    tag_value_list = []
+    tag_values = set()
     for tag_elt in tag_elts:
         tag_value = tag_elt.get_text()
-        tag_value_list.append(tag_value)
+        tag_values.add(tag_value)
 
-    first_vcard_number = None
-    find_contacts_in_vcards(html_elt.body)
+    scan_vcards_for_contacts(html_elt.body)
     need_title_contact = title_contact_name and not contacts.get(title_contact_name, None)
     need_filename_contact = filename_contact_name and not contacts.get(filename_contact_name, None)
     if first_pass and (not me or need_title_contact or need_filename_contact):
-        if "Text" in tag_value_list or "Voicemail" in tag_value_list or "Recorded" in tag_value_list:
+        if "Text" in tag_values or "Voicemail" in tag_values or "Recorded" in tag_values:
             # Can't do anything rational for SMS/MMS if we don't know our own number.
             # We _might_ be able to get along without the phone numbers for the contacts
             # named in the filename or the HTML title, but not always. Save them for
             # the second pass just in case.
-            print("Deferring (don't worry about it):", filename_abs_path)
-            come_back_later.append([subdir, filename_basename])
+            print(">> Deferring:", html_filename_abs_path)
+            come_back_later.append([subdir, html_filename_basename])
             return
 
-    if   "Text"      in tag_value_list:  process_Text()
-    elif "Received"  in tag_value_list:  process_call(1)
-    elif "Placed"    in tag_value_list:  process_call(2)
-    elif "Missed"    in tag_value_list:  process_call(3)
-    elif "Voicemail" in tag_value_list:  process_Voicemail()
-    elif "Recorded"  in tag_value_list:  process_Voicemail()
+    if not first_pass:
+        print(">> 2nd  pass:", html_filename_abs_path)
+        # need to be firmer about mapping contact names to numbers!
+        if title_contact_name and not contact_name_to_number(title_contact_name):
+            return
+        if filename_contact_name and not contact_name_to_number(filename_contact_name):
+            return
+
+    if   "Text"      in tag_values:  process_Text()
+    elif "Received"  in tag_values:  process_call(1)
+    elif "Placed"    in tag_values:  process_call(2)
+    elif "Missed"    in tag_values:  process_call(3)
+    elif "Voicemail" in tag_values:  process_Voicemail()
+    elif "Recorded"  in tag_values:  process_Voicemail()
     else:
-        print("Unrecognized tag situation '" + str(tag_value_list) + "'; silently ignoring file '" + filename_rel_path + "'")
-
-# In some extreme cases, we have to pick our the correspondent from the name
-# of the file. It can be a phone number or a contact name, or it can be completely missing.
-def name_or_number_from_filename():
-    global filename_phone_number, filename_contact_name
-    filename_phone_number = None
-    filename_contact_name = None
-    # phone number with optional "+"
-    match = re.match(r'(\+?[0-9]+) - ', filename_basename)
-    if match:
-        filename_phone_number = match.group(1)
-    else:
-        # sometimes a single " - ", sometimes two of them
-        match = re.match(r'([^ ].*) - .+ - ', filename_basename)
-        if not match:
-            match = re.match(r'([^ ].*) - ', filename_basename)
-        if match:
-            filename_contact_name = match.group(1)
-            if filename_contact_name == "Group Conversation":
-                filename_contact_name = None
-
-def name_or_number_from_title():
-    global title_phone_number, title_contact_name
-    title_phone_number = None
-    title_contact_name = None
-    title_elt = html_elt.find('head').find('title')
-    title_value = title_elt.get_text()
-    split = title_value.split("\n")
-    correspondent = split[len(split)-1].strip()
-    
-    if not correspondent:
-        return
-
-    match = re.match(r'(\+?[0-9]+)', correspondent)
-    if match:
-        # I think this doesn't actually happen
-        title_phone_number = match.group(1)
-    else:
-        title_contact_name = correspondent
-        if title_contact_name == "Group Conversation":
-            title_contact_name = None
-
-def find_contacts_in_vcards(parent_elt):
-    global me, first_vcard_number
-    vcard_elts = parent_elt.find_all(class_="vcard")
-    for i in range(len(vcard_elts)):
-        vcard_elt = vcard_elts[i]
-        tel_elt = vcard_elt.find(class_='tel')
-        if tel_elt: # vcard attachments also get the "vcard" CSS class
-            href_attr = tel_elt['href']
-            if href_attr:
-                if href_attr.startswith("tel:"):
-                    href_attr = href_attr[4:]
-                    if not href_attr:
-                        continue
-                this_number = href_attr
-                if i == 0:
-                    first_vcard_number = this_number
-                fn_elt = vcard_elt.find(class_="fn")
-                if fn_elt:
-                    this_name = fn_elt.get_text()
-                    # Sometimes the "name" ends up being a repeat of the phone number
-                    if this_name and not re.match(r'\+?[0-9]+', this_name):
-                        if this_name == "Me":
-                            me = this_number
-                        else:
-                            contacts[this_name] = this_number
+        print("Unrecognized tag_value situation '" + str(tag_values) + "'; silently ignoring file '" + html_filename_rel_path + "'")
 
 # Information needs:
 #
@@ -249,19 +180,19 @@ def find_contacts_in_vcards(parent_elt):
 def process_Text():
     # This can be either SMS or MMS. MMS can be either with or without attachments.
     message_elts = html_elt.find_all(class_='message')
-    participant_elt = html_elt.find(class_='participants')
+    participants_elt = html_elt.find(class_='participants')
 
-    if participant_elt:
-        write_mms_messages(participant_elt, message_elts)
+    if participants_elt:
+        write_mms_messages(participants_elt, message_elts)
     else:
         write_sms_messages(message_elts)
 
 def process_Voicemail():
     process_call(4)
     body = html_elt.find('body')
-    write_sms_message_for_vm(body)
+    write_mms_message_for_vm(body)
 
-def process_call(type):
+def process_call(call_type):
     contributor = html_elt.body.find(class_="contributor")
     telephone_number_elt = contributor.find(class_="tel")
     telephone_number_full = telephone_number_elt.attrs['href']
@@ -288,37 +219,19 @@ def process_call(type):
         iso_duration = duration_elt.attrs['title']
         duration = isodate.parse_duration(iso_duration)
         duration = round(datetime.timedelta.total_seconds(duration))
-    write_call_message(telephone_number, presentation, duration, timestamp, type, readable_date)
-
-def write_call_message(telephone_number, presentation, duration, timestamp, type, readable_date):
-    global num_sms, num_vms, num_calls
-    call_data = {'telephone_number': telephone_number, 'duration': duration, 'timestamp': timestamp, 'type': type, 'readable_date': readable_date, 'presentation': presentation}
-    
-    call_backup_file = open(call_backup_filename, 'a')
-    call_text = ('<call number="%(telephone_number)s" '
-                 'duration="%(duration)s" '
-                 'date="%(timestamp)s" '
-                 'type="%(type)s" '
-                 'presentation="%(presentation)s" '
-                 'readable_date="%(readable_date)s" '
-                 ' />\n' % call_data)
-    call_backup_file.write("<!-- file: '" + filename_rel_path + "' -->\n")
-    call_backup_file.write(call_text)
-
-    call_backup_file.close()
-    num_calls += 1
+    write_call_message(telephone_number, presentation, duration, timestamp, call_type, readable_date)
 
 def contact_name_to_number(contact_name):
     if not contact_name:
-        print("File:", filename_abs_path)
+        print(f'File: "{html_filename_abs_path}"')
         print("We can't figure out the name or number for a contact in the above file.")
         return "0"
     contact_number = contacts.get(contact_name, None)
-    if not contact_number and not missing_contacts.get(contact_name, None):
-        print("File:", filename_abs_path)
-        print(contact_number_file + ': TODO: add a +phonenumber for contact: "' + contact_name + '": "+",')
+    if not contact_number and not contact_name in missing_contacts:
+        print(f'TODO: {os.path.abspath(contact_number_file)}: add a +phonenumber for contact: "{contact_name}": "+",')
+        print(f'      due to File: "{html_filename_abs_path}"')
         # we add this fake entry to a dictionary so we don't keep complaining about the same thing
-        missing_contacts[contact_name] = "0"
+        missing_contacts.add(contact_name)
     return contact_number
 
 def contact_number_to_name(contact_number):
@@ -328,10 +241,8 @@ def contact_number_to_name(contact_number):
                 return name
     return None
 
-def get_sender():
-    if first_vcard_number:
-        sender = first_vcard_number
-    elif title_phone_number:
+def get_sender_number_from_title_or_filename():
+    if title_phone_number:
         sender = title_phone_number
     elif title_contact_name:
         sender = contact_name_to_number(title_contact_name)
@@ -343,55 +254,122 @@ def get_sender():
         sender = None
     return sender
 
+def write_call_message(telephone_number, presentation, duration, timestamp, call_type, readable_date):
+    global num_calls
+    call_backup_file = open(call_backup_filename, 'a')
+    parent_elt = BeautifulSoup()
+    file_comment = Comment(f'file: "{html_filename_rel_path}"')
+    parent_elt.append(file_comment)
+    bs4_append_call_elt(parent_elt, telephone_number, duration, timestamp, presentation, readable_date, call_type)
+    call_backup_file.write(parent_elt.prettify())
+    call_backup_file.write('\n')
+    call_backup_file.close()
+    num_calls += 1
+
 def write_sms_messages(message_elts):
     global num_sms, num_vms, num_calls
+    other_party_number = None
+    # Since the "address" element of an SMS is always the other end, scan the
+    # message elements until we find a number this not "me". Use that as the
+    # address value for all of the SMS files in this HTML.
+    for i in range(len(message_elts)):
+        message_elt = message_elts[i]
+        if other_party_number is None:
+            other_party_number = scan_vcards_for_contacts(message_elt)
+            if other_party_number is not None:
+                break
+    # This will be the case if the HTML file contains only a single SMS
+    # that was sent by "me". Use fallbacks.
+    if other_party_number is None:
+        other_party_number = get_sender_number_from_title_or_filename()
+
+    backup_file = open(sms_backup_filename, 'a')
 
     for i in range(len(message_elts)):
         message_elt = message_elts[i]
-        find_contacts_in_vcards(message_elt)
-        sender = first_vcard_number
-        sent_by_me = (sender == me)
         the_text = get_message_text(message_elt)
-        v_values = {}
-        v_values['participants'] = sender
-        v_values['type'] = get_message_type(message_elt)
-        v_values['message'] = the_text
-        v_values['timestamp'] = get_time_unix(message_elt)
-        attachments = get_attachments(message_elt)
+        message_type = get_message_type(message_elt)
+        sent_by_me = (message_type == 2)
+        timestamp = get_time_unix(message_elt)
+        attachments = get_attachment_elts(message_elt)
+        parent_elt = BeautifulSoup()
+        file_comment = Comment(f'file: "{html_filename_rel_path}"')
+        parent_elt.append(file_comment)
         # if it was just an image with no text, there is no point in creating an empty SMS to go with it
         if the_text and the_text != "MMS Sent" and not attachments:
-            sms_text = ('<sms protocol="0" address="%(participants)s" '
-                        'date="%(timestamp)s" type="%(type)s" '
-                        'subject="null" body="%(message)s" '
-                        'toa="null" sc_toa="null" service_center="null" '
-                        'read="1" status="1" locked="0" /> \n' % v_values)
-            sms_backup_file = open(sms_backup_filename, 'a')
-            sms_backup_file.write("<!-- file: '" + filename_rel_path + "' -->\n")
-            sms_backup_file.write(sms_text)
-            sms_backup_file.close()
-            num_sms += 1
+            bs4_append_sms_elt(parent_elt, other_party_number, timestamp, the_text, message_type)
         else:
-            v_values['the_text'] = the_text
-            v_values['sender'] = sender
-            v_values['sent_by_me'] = sent_by_me
-            v_values['filename_rel_path'] = filename_rel_path
-            write_attachments(message_elt, v_values, attachments)
+            msgbox_type = message_type
+            bs4_append_mms_elt_with_parts(parent_elt, attachments, the_text, other_party_number, sent_by_me, timestamp, msgbox_type, [other_party_number])
+        backup_file.write(parent_elt.prettify())
+        backup_file.write('\n')
+        num_sms += 1
 
-def write_sms_message_for_vm(body):
+    backup_file.close()
+
+def write_mms_message_for_vm(body):
     global num_sms, num_vms, num_calls
-    sender = get_sender()
-    v_values = {}
-    v_values['participants'] = sender
-    v_values['timestamp'] = get_time_unix(body)
-    sender_name = contact_number_to_name(sender)
-    v_values['the_text'] = "Voicemail/Recording from " + (sender_name if sender_name else sender)
-    v_values['sender'] = sender
-    v_values['sent_by_me'] = False
-    v_values['filename_rel_path'] = filename_rel_path
-    v_values['type'] = "1"
-    write_attachments(body, v_values, get_attachments(body), [sender])
+    sender = None
+    sender_name = None
+    contributor_elt = body.find(class_='contributor')
+    this_number, this_name = get_number_and_name_from_tel_elt_parent(contributor_elt)
+    if this_number:
+        sender = this_number
+        sender_name = this_name
+    if not sender:
+        sender = get_sender_number_from_title_or_filename()
+    if not sender_name:
+        sender_name = contact_number_to_name(sender)
 
-def get_attachments(message_elt):
+    participants = [sender] if sender else ["0"]
+    timestamp = get_time_unix(body)
+    vm_from = (sender_name if sender_name else sender if sender else "Unknown")
+    transcript = get_vm_transcript(body)
+    if transcript:
+        the_text = "Voicemail/Recording from: " + vm_from + "\nTranscript: " + transcript
+    else:
+        the_text = "Voicemail/Recording from: " + vm_from        
+    attachment_elts = get_attachment_elts(body)
+    msgbox_type = '1' # 1 = Received, 2 = Sent
+    sent_by_me = False
+    parent_elt = BeautifulSoup()
+    file_comment = Comment(f'file: "{html_filename_rel_path}"')
+    parent_elt.append(file_comment)
+    bs4_append_mms_elt_with_parts(parent_elt, attachment_elts, the_text, sender, sent_by_me, timestamp, msgbox_type, participants)
+    vms_backup_file = open(vm_backup_filename, "a")
+    vms_backup_file.write(parent_elt.prettify())
+    vms_backup_file.write('\n')
+    vms_backup_file.close()
+    num_vms += 1
+
+def write_mms_messages(participants_elt, message_elts):
+    global num_sms, num_vms, num_calls
+    sms_backup_file = open(sms_backup_filename, 'a')
+
+    participants = get_participant_phone_numbers(participants_elt)
+
+    for i in range(len(message_elts)):
+        message_elt = message_elts[i]
+        # TODO who is sender?
+        not_me_vcard_number = scan_vcards_for_contacts(message_elt)
+        sender = not_me_vcard_number
+        sent_by_me = sender not in participants
+        the_text = get_message_text(message_elt)
+        message_type = get_message_type(message_elt)
+        timestamp = get_time_unix(message_elt)
+        attachments = get_attachment_elts(message_elt)
+
+        parent_elt = BeautifulSoup()
+        file_comment = Comment(f'file: "{html_filename_rel_path}"')
+        parent_elt.append(file_comment)
+        bs4_append_mms_elt_with_parts(parent_elt, attachments, the_text, sender, sent_by_me, timestamp, None, participants)
+        sms_backup_file.write(parent_elt.prettify())
+        sms_backup_file.write('\n')
+        num_sms += 1
+
+    sms_backup_file.close()
+
+def get_attachment_elts(message_elt):
     attachments = []
     div_elts = message_elt.find_all('div')
     for i in range(len(div_elts)):
@@ -407,121 +385,212 @@ def get_attachments(message_elt):
             attachments.append(vcard_elt)
     return attachments
 
-def write_attachments(message_elt, v_values, attachment_elts, participants=None):
-    global num_sms, num_vms, num_calls
-    if not participants:
-        participants = [v_values['participants'],me]
-    v_values['participants'] = '~'.join(participants)
+def bs4_append_sms_elt(parent_elt, sender, timestamp, the_text, message_type):
+    sms_elt = html_elt.new_tag('sms')
+    parent_elt.append(sms_elt)
 
-    v_values['participants_xml'] = get_participants_xml(participants, v_values['sender'], v_values['sent_by_me'])
-    v_values['m_type'] = 128 if v_values['sent_by_me'] else 132
-    mms_head = ('<mms address="%(participants)s" ct_t="application/vnd.wap.multipart.related" '
-                'date="%(timestamp)s" m_type="%(m_type)s" msg_box="%(type)s" read="1" '
-                'rr="129" seen="1" sub_id="-1" text_only="0"> \n'
-                '  <addrs> \n'
-                '%(participants_xml)s'
-                '  </addrs> \n'
-                '  <parts> \n'
-                % v_values)
+    sms_elt['protocol'] = '0'
+    sms_elt['address'] = sender
+    sms_elt['timestamp'] = timestamp
+    sms_elt['type'] = message_type
+    sms_elt['subject'] = 'null'
+    sms_elt['body'] = the_text
+    sms_elt['toa'] = 'null'
+    sms_elt['sc_toa'] = 'null'
+    sms_elt['service_center'] = 'null'
+    sms_elt['read'] = '1'
+    sms_elt['status'] = '1'
+    sms_elt['locked'] = '0'
 
-    mms_text = ("    <!-- file: '" + filename_rel_path + "' -->\n"
-                '    <part seq="-1" ct="text/plain" name="null" chset="106" cd="null" fn="null" '
-                'cid="&lt;text000001&gt;" cl="text000001" ctt_s="null" ctt_t="null" text="%(the_text)s"/> \n'
-                % v_values)
-
-    mms_tail = ('  </parts> \n'
-                '</mms> \n'
-                % v_values)
-
-    sms_init = False
-    vms_init = False
-    sms_backup_file = open(sms_backup_filename, 'a')
-    vms_backup_file = open(vm_backup_filename, 'a')
+def bs4_append_mms_elt_with_parts(parent_elt, attachment_elts, the_text, sender, sent_by_me, timestamp, msgbox_type, participants):
+    m_type = 128 if sent_by_me else 132
+    bs4_append_mms_elt(parent_elt, participants, timestamp, m_type, msgbox_type, sender, sent_by_me, the_text)
+    mms_elt = parent_elt.mms
 
     if attachment_elts:
-        for i in range(len(attachment_elts)):
-            attachment_elt = attachment_elts[i]
-            sequence_number = i
-            if attachment_elt.name == 'img':
-                if not sms_init:
-                    sms_backup_file.write(mms_head)
-                    sms_backup_file.write(mms_text)
-                    sms_init = True
-                attachment_file_ref = attachment_elt['src']
-                write_attachment_common("image", sms_backup_file, sequence_number, attachment_file_ref)
-                num_sms += 1
-            elif attachment_elt.name == 'audio':
-                if not vms_init:
-                    vms_backup_file.write(mms_head)
-                    vms_backup_file.write(mms_text)
-                    vms_init = True
-                attachment_file_ref = attachment_elt.a['href']
-                write_attachment_common("audio", vms_backup_file, sequence_number, attachment_file_ref)
-                num_vms += 1
-            elif attachment_elt.name == 'a' and 'vcard' in attachment_elt['class']:
-                if not sms_init:
-                    sms_backup_file.write(mms_head)
-                    sms_backup_file.write(mms_text)
-                    sms_init = True
-                attachment_file_ref = attachment_elt['href']
-                write_attachment_common("vcard", sms_backup_file, sequence_number, attachment_file_ref)
-                num_vms += 1
-            else:
-                print("Unrecognized MMS attachment in file", filename_abs_path, ":\n", attachment)
+        parts_elt = mms_elt.parts
+        bs4_append_part_elts(parts_elt, attachment_elts)
 
-    if sms_init:
-        sms_backup_file.write(mms_tail)
-    if vms_init:
-        vms_backup_file.write(mms_tail)
-    sms_backup_file.close()
-    vms_backup_file.close()
+def bs4_append_part_elts(parent_elt, attachment_elts):
+    for i in range(len(attachment_elts)):
+        attachment_elt = attachment_elts[i]
+        sequence_number = i
+        if attachment_elt.name == 'img':
+            attachment_file_ref = attachment_elt['src']
+            bs4_append_part_elt(parent_elt, "image", sequence_number, attachment_file_ref)
+        elif attachment_elt.name == 'audio':
+            attachment_file_ref = attachment_elt.a['href']
+            bs4_append_part_elt(parent_elt, "audio", sequence_number, attachment_file_ref)
+        elif attachment_elt.name == 'a' and 'vcard' in attachment_elt['class']:
+            attachment_file_ref = attachment_elt['href']
+            bs4_append_part_elt(parent_elt, "vcard", sequence_number, attachment_file_ref)
+        else:
+            print("Unrecognized MMS attachment in file", html_filename_abs_path, ":\n", attachment_elt)
+    
+def bs4_append_part_elt(parent_elt, attachment_type, sequence_number, attachment_file_ref):
+    attachment_filename, content_type = figure_out_attachment_filename_and_type(attachment_type, attachment_file_ref)
+    if attachment_filename:
+        attachment_filename_rel_path = os.path.join(subdir, attachment_filename)
+        attachment_file = open(attachment_filename, 'rb') 
+        attachment_data = base64.b64encode(attachment_file.read()).decode()
+        attachment_file.close()
+        attachment_filename_rel_path = os.path.join(subdir, attachment_filename)
+        file_comment = Comment(f'file: "{attachment_filename_rel_path}"')
+        parent_elt.append(file_comment)
+        #bs4_part_elt_parent(parent_elt, sequence_number, content_type, attachment_filename, attachment_data)
+        part_elt = html_elt.new_tag('part')
+        parent_elt.append(part_elt)
 
-def write_attachment_common(attachment_type, backup_file, sequence_number, attachment_file_ref):
-    attachment_filename, content_type = figure_out_attachment_file_and_type(attachment_type, attachment_file_ref)
-    if not attachment_filename:
-        return
-    attachment_filename_rel_path = os.path.join(subdir, attachment_filename)
-    attachment_file = open(attachment_filename, 'rb') 
-    attachment_data = base64.b64encode(attachment_file.read()).decode()
-    attachment_file.close()
-    backup_text = (
-        "    <!-- file: '" + attachment_filename_rel_path + "-->\n"
-        '    <part seq="' + str(sequence_number) + '"' 
-        ' ct="' + content_type + '"'
-        ' name="' + attachment_filename + '"'
-        ' chset="null" cd="null" fn="null" cid="&lt;0&gt;" ctt_s="null" ctt_t="null" text="null" sef_type="0" '
-        ' cl="' + attachment_filename + '"'
-        ' data="' + attachment_data + '"'
-        ' /> \n')
-    backup_file.write(backup_text)
+        # seq - The order of the part.
+        part_elt['seq'] = sequence_number
+        # ct - The content type of the part.
+        part_elt['ct'] = content_type
+        # name - The name of the part.
+        part_elt['name'] = attachment_filename
+        # chset - The charset of the part.
+        part_elt['chset'] = 'null'
+        part_elt['cd'] = 'null'
+        part_elt['fn'] = 'null'
+        part_elt['cid'] = '<0>'
+        part_elt['ctt_s'] = 'null'
+        part_elt['ctt_t'] = 'null'
+        # text - The text content of the part.
+        part_elt['text'] = 'null'
+        part_elt['sef_type'] = '0'
+        # cl - The content location of the part.
+        part_elt['cl'] = attachment_filename
+        # data - The base64 encoded binary content of the part.
+        part_elt['data'] = attachment_data
 
-def figure_out_attachment_file_and_type(attachment_type, attachment_file_ref):
+def bs4_append_mms_elt(parent_elt, participants, timestamp, m_type, msgbox_type, sender, sent_by_me, the_text):
+    mms_elt = html_elt.new_tag('mms')
+    parent_elt.append(mms_elt)
+
+    bs4_append_addrs_elt(mms_elt, participants, sender, sent_by_me)
+
+    parts_elt = html_elt.new_tag('parts')
+    mms_elt.append(parts_elt)
+    bs4_append_text_part_elt(parts_elt, the_text)
+    
+    participants_tilde = '~'.join(participants)
+    # address - The phone number of the sender/recipient.
+    mms_elt['address'] = participants_tilde
+    # ct_t - The Content-Type of the message, usually "application/vnd.wap.multipart.related"
+    mms_elt['ct_t'] = 'application/vnd.wap.multipart.related'
+    # date - The Java date representation (including millisecond) of the time when the message was sent/received.
+    mms_elt['date'] = timestamp
+    # m_type - The type of the message defined by MMS spec.
+    mms_elt['m_type'] = m_type
+    # msg_box - The type of message, 1 = Received, 2 = Sent, 3 = Draft, 4 = Outbox
+    mms_elt['msg_box'] = msgbox_type
+    # read - Has the message been read
+    mms_elt['read'] = '1'
+    # rr - The read-report of the message.
+    mms_elt['rr'] = '129'
+    mms_elt['seen'] = '1'
+    mms_elt['sub_id'] = '-1'
+    mms_elt['text_only'] = '0'
+
+    # sub - The subject of the message, if present.
+    # read_status - The read-status of the message.
+    # m_id - The Message-ID of the message
+    # m_size - The size of the message.
+    # sim_slot - The sim card slot.
+    # readable_date - Optional field that has the date in a human readable format.
+    # contact_name - Optional field that has the name of the contact.
+    
+    return parent_elt
+
+def bs4_append_text_part_elt(elt_parent, the_text):
+    if not the_text or the_text == "MMS Sent":
+        return  # don't bother with this trivial text part 
+
+    text_part_elt = html_elt.new_tag('part')
+
+    # seq - The order of the part.
+    text_part_elt['seq'] = '-1'
+    # ct - The content type of the part.
+    text_part_elt['ct'] = 'text/plain'
+    # name - The name of the part.
+    text_part_elt['name'] = 'null'
+    # chset - The charset of the part.
+    text_part_elt['chset'] = '106'
+    text_part_elt['cd'] = 'null'
+    text_part_elt['fn'] = 'null'
+    text_part_elt['cid'] = '<text000001>'
+    # cl - The content location of the part.
+    text_part_elt['cl'] = 'text000001'
+    text_part_elt['ctt_s'] = 'null'
+    text_part_elt['ctt_t'] = 'null'
+    # text - The text content of the part.
+    text_part_elt['text'] = the_text
+    elt_parent.append(text_part_elt)
+
+    # data - The base64 encoded binary content of the part.
+
+def bs4_append_addrs_elt(elt_parent, participants, sender, sent_by_me):
+    addrs_elt = html_elt.new_tag('addrs')
+    elt_parent.append(addrs_elt)
+    for participant in participants + [me]:
+        participant_is_sender = ((participant == sender) or (sent_by_me and participant == me))
+        addr_elt = html_elt.new_tag('addr')
+
+        # address - The phone number of the sender/recipient.
+        addr_elt['address'] = participant
+        # charset - Character set of this entry
+        addr_elt['charset'] = '106'
+        # type - The type of address, 129 = BCC, 130 = CC, 151 = To, 137 = From
+        addr_elt['type'] = 137 if participant_is_sender else 151
+
+        addrs_elt.append(addr_elt)
+
+def bs4_append_call_elt(parent_elt, telephone_number, duration, timestamp, presentation, readable_date, call_type):
+    call_elt = html_elt.new_tag('call')
+    # number - The phone number of the call.
+    call_elt['number'] = telephone_number
+    # duration - The duration of the call in seconds.
+    call_elt['duration'] = duration
+    # date - The Java date representation (including millisecond) of the time of the call
+    call_elt['date'] = timestamp
+    # presentation - caller id presentation info. 1 = Allowed, 2 = Restricted, 3 = Unknown, 4 = Payphone.
+    call_elt['presentation'] = presentation
+    # readable_date - Optional field that has the date in a human readable format.
+    call_elt['readable_date'] = readable_date    
+    # call_type - 1 = Incoming, 2 = Outgoing, 3 = Missed, 4 = Voicemail, 5 = Rejected, 6 = Refused List.
+    call_elt['call_type'] = call_type    
+    
+    # subscription_id - Optional field that has the id of the phone subscription (SIM). On some phones these are values like 0, 1, 2  etc. based on how the phone assigns the index to the sim being used while others have the full SIM ID.
+    # contact_name - Optional field that has the name of the contact.
+    
+    parent_elt.append(call_elt)
+
+def figure_out_attachment_filename_and_type(attachment_type, attachment_file_ref):
     base, ext = os.path.splitext(attachment_file_ref)
-    attachment_filename, content_type = consider_this_attachment_candidate(base, attachment_type)
+    attachment_filename, content_type = consider_this_attachment_file_candidate(base, attachment_type)
     if attachment_filename:
         return attachment_filename, content_type
 
     base = base[:50]  # this is odd; probably bugs in Takeout or at least weird choices
-    attachment_filename, content_type = consider_this_attachment_candidate(base, attachment_type)
+    attachment_filename, content_type = consider_this_attachment_file_candidate(base, attachment_type)
     if attachment_filename:
         return attachment_filename, content_type
 
-    base, ext = os.path.splitext(filename_basename)
-    attachment_filename, content_type = consider_this_attachment_candidate(base, attachment_type)
+    base, ext = os.path.splitext(html_filename_basename)
+    attachment_filename, content_type = consider_this_attachment_file_candidate(base, attachment_type)
     if attachment_filename:
         return attachment_filename, content_type
         
     base = base[:50]  # this is odd; probably bugs in Takeout or at least weird choices
-    attachment_filename, content_type = consider_this_attachment_candidate(base, attachment_type)
+    attachment_filename, content_type = consider_this_attachment_file_candidate(base, attachment_type)
     if attachment_filename:
         return attachment_filename, content_type
 
     print(attachment_type, "attachment referenced in message, but not found:", os.path.abspath(os.path.join(subdir, attachment_file_ref)))
     print("  src='" + attachment_file_ref + "'")
-    print("  referenced from", filename_abs_path)
+    print("  referenced from", html_filename_abs_path)
     return None, None
     
-def consider_this_attachment_candidate(base, attachment_type):
+def consider_this_attachment_file_candidate(base, attachment_type):
     if attachment_type == "image":
         if os.path.exists(base + '.jpg'):
             attachment_filename = base + '.jpg'
@@ -547,60 +616,6 @@ def consider_this_attachment_candidate(base, attachment_type):
             return attachment_filename, content_type
     return None, None
     
-def write_mms_messages(participant_elt, message_elts):
-    global num_sms, num_vms, num_calls
-    sms_backup_file = open(sms_backup_filename, 'a')
-
-    participants = get_participant_phone_numbers(participant_elt)
-    v_values = {'participants' : '~'.join(participants)}
-
-    for i in range(len(message_elts)):
-        message_elt = message_elts[i]
-        find_contacts_in_vcards(message_elt)
-        sender = first_vcard_number
-        sent_by_me = sender not in participants
-        the_text = get_message_text(message_elt)
-        v_values['type'] = get_message_type(message_elt)
-        v_values['message'] = the_text
-        v_values['timestamp'] = get_time_unix(message_elt)
-        v_values['participants_xml'] = get_participants_xml(participants, sender, sent_by_me)
-        v_values['msg_box'] = 2 if sent_by_me else 1
-        v_values['m_type'] = 128 if sent_by_me else 132
-        attachments = get_attachments(message_elt)
-
-        if the_text and the_text != "MMS Sent" and not attachments:
-            mms_text = ('<mms address="%(participants)s" ct_t="application/vnd.wap.multipart.related" '
-                        'date="%(timestamp)s" m_type="%(m_type)s" msg_box="%(msg_box)s" read="1" '
-                        'rr="129" seen="1" sub_id="-1" text_only="1"> \n'
-                        '  <addrs> \n'
-                        '%(participants_xml)s'
-                        '  </addrs> \n'
-                        '  <parts> \n'
-                        '    <part ct="text/plain" seq="0" text="%(message)s"/> \n'
-                        '  </parts> \n'
-                        '</mms> \n' % v_values)
-
-            sms_backup_file.write("<!-- file: '" + filename_rel_path + "' -->\n")
-            sms_backup_file.write(mms_text)
-            num_sms += 1
-        else:
-            v_values['the_text'] = the_text
-            v_values['sender'] = sender
-            v_values['sent_by_me'] = sent_by_me
-            v_values['filename_rel_path'] = filename_rel_path
-            write_attachments(message_elt, v_values, attachments, participants)
-    sms_backup_file.close()
-
-def get_participants_xml(participants,sender,sent_by_me):
-    participants_xml = u''
-    temp_list = participants.copy()
-    temp_list.append(me)
-    for participant in temp_list:
-        participant_is_sender = participant == sender or (sent_by_me and participant == me)
-        participant_values = {'number': participant, 'code': 137 if participant_is_sender else 151}
-        participants_xml += ('    <addr address="%(number)s" charset="106" type="%(code)s"/> \n' % participant_values)
-    return participants_xml
-
 def get_message_type(message): # author_elt = message_elts[i].cite
     author_elt = message.cite
     if ( not author_elt.span ):
@@ -608,13 +623,18 @@ def get_message_type(message): # author_elt = message_elts[i].cite
     else:
         return 1
 
-    return 0
+def get_vm_transcript(message_elt):
+    full_text_elt = message_elt.find(class_='full-text')
+    if not full_text_elt:
+        return None
+    
+    return BeautifulSoup(full_text_elt.text,'html.parser').prettify().strip()
 
 def get_message_text(message_elt):
     text_elt = message_elt.find('q')
     if not text_elt:
         return ""
-    return BeautifulSoup(text_elt.text,'html.parser').prettify(formatter='html').strip().replace('"',"'")
+    return BeautifulSoup(text_elt.text,'html.parser').prettify().strip()
 
 def get_participant_phone_numbers(participant_elt):
     participants = []
@@ -627,7 +647,7 @@ def get_participant_phone_numbers(participant_elt):
             try:
                 raw_number = participant.a['href'][4:]
                 if not raw_number:
-                    raw_number = contact_name_to_number(get_sender())
+                    raw_number = contact_name_to_number(get_sender_number_from_title_or_filename())
                 phone_number = phonenumbers.parse(raw_number, None)
             except phonenumbers.phonenumberutil.NumberParseException:
                 participants.append(participant.a['href'][4:])
@@ -635,7 +655,9 @@ def get_participant_phone_numbers(participant_elt):
             participants.append(format_number(phone_number))
 
     if participants == []:
-        participants.append(contact_name_to_number(title_correspondent))
+        if title_phone_number is None:
+            title_phone_number = contact_name_to_number(title_contact_name)
+        participants.append(contact_name_to_number(title_phone_number))
                 
     return participants
 
@@ -707,6 +729,7 @@ def write_real_headers():
     print(num_calls, "Call records written to", call_backup_filename)
 
 def prep_output_files():
+    sms_backup_filename_BAK = sms_backup_filename + '.BAK'
     if os.path.exists(sms_backup_filename):
         if os.path.exists(sms_backup_filename_BAK):
             print('>> Removing', os.path.abspath(sms_backup_filename_BAK))
@@ -717,6 +740,7 @@ def prep_output_files():
     print('>> SMS/MMS will be written to',  sms_backup_filename, 'aka', os.path.abspath(sms_backup_filename))
     print(">>")
 
+    call_backup_filename_BAK = call_backup_filename + '.BAK'
     if os.path.exists(call_backup_filename):
         if os.path.exists(call_backup_filename_BAK):
             print('>> Removing', os.path.abspath(call_backup_filename_BAK))
@@ -724,9 +748,10 @@ def prep_output_files():
         print('>> Renaming existing Calls output file to', os.path.abspath(call_backup_filename_BAK))
         os.rename(call_backup_filename, call_backup_filename_BAK)
 
-    print('>> Call history will be written to', sms_backup_filename, 'aka', os.path.abspath(sms_backup_filename))
+    print('>> Call history will be written to', call_backup_filename, 'aka', os.path.abspath(call_backup_filename))
     print(">>")
 
+    vm_backup_filename_BAK = vm_backup_filename + '.BAK'
     if os.path.exists(vm_backup_filename):
         if os.path.exists(vm_backup_filename_BAK):
             print('>> Removing', os.path.abspath(vm_backup_filename_BAK))
@@ -747,5 +772,87 @@ def prep_output_files():
 
     print(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
 
+# In some extreme cases, we have to pick our the correspondent from the name
+# of the file. It can be a phone number or a contact name, or it can be completely missing.
+def get_name_or_number_from_filename():
+    global filename_phone_number, filename_contact_name
+    filename_phone_number = None
+    filename_contact_name = None
+    # phone number with optional "+"
+    match_phone_number = re.match(r'(\+?[0-9]+) - ', html_filename_basename)
+    if match_phone_number:
+        filename_phone_number = match_phone_number.group(1)
+    else:
+        # sometimes a single " - ", sometimes two of them
+        match_name = re.match(r'([^ ].*) - .+ - ', html_filename_basename)
+        if not match_name:
+            match_name = re.match(r'([^ ].*) - ', html_filename_basename)
+        if match_name:
+            filename_contact_name = match_name.group(1)
+            if filename_contact_name == "Group Conversation":
+                filename_contact_name = None
+
+def get_name_or_number_from_title():
+    global title_phone_number, title_contact_name
+    title_phone_number = None
+    title_contact_name = None
+    title_elt = html_elt.find('head').find('title')
+    title_value = title_elt.get_text()
+    # Takeout puts a newline in the middle of the title
+    split = title_value.split("\n")
+    correspondent = split[len(split)-1].strip()
+    
+    if not correspondent:
+        return
+
+    match_phone_number = re.match(r'(\+?[0-9]+)', correspondent)
+    if match_phone_number:
+        # I think this doesn't actually happen
+        title_phone_number = match_phone_number.group(1)
+    else:
+        title_contact_name = correspondent
+        if title_contact_name == "Group Conversation":
+            title_contact_name = None
+
+# Iterate all of the vcards in the HTML body to speculatively populate the
+# contacts list. Also make a note of a contact which is "not me" for
+# use as the address in an SMS record (it's always "the other end"). The
+# same logic does not apply to MMS, which has a different scheme for address.
+def scan_vcards_for_contacts(elt_parent):
+    global me
+    not_me_vcard_number = None
+    vcard_elts = elt_parent.find_all(class_="vcard")
+    for i in range(len(vcard_elts)):
+        vcard_elt = vcard_elts[i]
+        this_number, this_name = get_number_and_name_from_tel_elt_parent(vcard_elt)
+        if this_number:
+            if this_name == "Me":
+                me = this_number
+            else:
+                contacts[this_name] = this_number
+                not_me_vcard_number = this_number
+    return not_me_vcard_number
+
+def get_number_and_name_from_tel_elt_parent(parent_elt):
+    this_name = None
+    this_number = None
+    tel_elt = parent_elt.find(class_='tel')
+    if not tel_elt:
+        return None, None
+    href_attr = tel_elt['href']
+    if href_attr:
+        if href_attr.startswith("tel:"):
+            href_attr = href_attr[4:]
+        if not href_attr:
+            return None, None  # this shouldn't happen
+        this_number = href_attr
+        fn_elt = parent_elt.find(class_="fn")
+        if not fn_elt:
+            return this_number, None
+        this_name = fn_elt.get_text()
+        # Sometimes the "name" ends up being a repeat of the phone number, which is useless for us
+        if not this_name or re.match(r'\+?[0-9]+', this_name):
+            return this_number, None
+    return this_number, this_name
 
 main()
