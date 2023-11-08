@@ -1,7 +1,9 @@
 # gvoice-sms-takeout-xml
 Convert Google Voice data from Google Takeout to XML files suitable for use with SMS Backup and Restore.
 
-Google Takeout is a tool provided by Google for downloading various kinds of data associated with your Google account.
+Google Takeout, 
+<https://takeout.google.com>,
+is a tool provided by Google for downloading various kinds of data associated with your Google account.
 In this case, it's data from Google Voice.
 It's exported as a ZIP file containing several individual HTML files and some other file types.
 Although the HTML files, like any HTML files, exhibit a certain structure,
@@ -13,7 +15,9 @@ There are many special cases.
 The script deals with all of the special cases that I know about,
 but there could easily be more special cases that don't happen to show up in the data that I have to work with.
 
-SMS Backup and Restore is a popular Android app that can back up your phone's text messages and call history.
+SMS Backup and Restore, 
+<https://play.google.com/store/apps/details?id=com.riteshsahu.SMSBackupRestore>,
+is a popular Android app that can back up your phone's text messages and call history.
 The backups are in XML format,
 and the app gives you several choices for where to keep them.
 The XML format is mostly -- but not completely -- documented.
@@ -23,14 +27,50 @@ The idea is that you then use those XML files to do a "restore" with the app.
 That transfers your Google Voice history into your phones native history.
 
 ## This fork
-This is a fork of https://github.com/karlrees/gvoice-sms-takeout-xml,
-which is itself a fork of https://github.com/calyptecc/gvoice-sms-takeout-xml.
+This is a fork of <https://github.com/karlrees/gvoice-sms-takeout-xml>,
+which is itself a fork of <https://github.com/calyptecc/gvoice-sms-takeout-xml>.
 Although I have made a massive number of changes, 
 so that it does not look much like the originals any more (perhaps it's not even recognizable),
 I have kept the same repo name and script name for the sake of being easily found.
 
 This fork corrects several problems I ran into when using the original scripts.
-I also added some additional features.
+I also added some significant additional features.
+
+### Apologia
+Reverse engineering is a hazardous business.
+There are already many special cases and oddities dealt with by the script.
+There are undoubtedly more that I either didn't happen to encounter, 
+or that I didn't notice.
+I welcome you bringing additional things like that to my attention,
+though fixing them up is the usual freebie "best effort" sort of thing.
+Undoubtedly, after some months or years, 
+I'll myself become a little hazy on the workings of the script,
+and that might add some time.
+
+The best evidence is the original HTML file that prevokes the issue.
+The script usually names a specific file that gives it a headache,
+but sometimes it will not know that it's misbehaving, 
+in which case you have a little detective work to do.
+In the XML outputs, input file names are includes as XML comments.
+For the case of being unable to find referenced attachments,
+it's probably some new quirk of the trial and error way the script has of figuring it out.
+I don't need to see the actual attachment file (MP3 or JPEG or whatever),
+but I do need to know what it's filename is.
+
+You have these choices for reporting things:
+
+- Open a pull request with a code change. 
+If you do this, please limit the PR to a single thing to make it easy for me to review it.
+(If you are an experienced python programmer, 
+you will probably be tempted to "fix up" my clumsy style.
+That's OK with me, 
+but I'd rather those sorts of things come as their own PRs rather than intermingled with more substantive stuff.)
+- Open an issue describing the problem.
+Don't worry if you don't know exactly what's going on.
+I just need enough information to figure it out.
+- You can also post in this repository's discussion area.
+That might be the best way to go if you are not sure you are really seeing a new problem.
+
 ## How to use this script
 You want to use python3 to run this, 
 and you may have to "pip install" some of the imported modules if you don't happen to already have them.
@@ -48,6 +88,7 @@ Use PIP to install them until python stops complaining.
 For example, `pip install bs4`.
 - When the script starts running correctly, it will announce the locations of inputs and outputs and other helpful information.
 
+### Output files
 The script produces three separate output files.
 
 - an "sms" file containing a combination SMS and MMS messages
@@ -58,6 +99,7 @@ The script produces three separate output files.
 If there is a transcript, it is included as a text part of the MMS message.
 A voicemail also creates a record in the "calls" file, without the recording or transcript.)
 
+### Missing contacts
 In the Google Takeout data, there are some edge cases where it's impossible to figure out the contact phone number.
 It's not too important for you to understand those edge cases,
 but the script works hard to deal with them.
@@ -106,13 +148,12 @@ That will give you something like:
   "Joe Blow": "+18885551234"
 }
 ```
-Add the contact name exactly as shown in the warning message. 
+Add the contact name exactly as shown in the TODO message. 
 Don't forget to include the `+` and the country code with the phone number. 
 The order of items in that file doesn't matter, but the python JSON parser requires a comma after each item except the final one.
 Rerun the script until you get no errors and no warnings about missing contact phone numbers.
 
-You can now use the resulting output file as a backup file to be restored with the SMS Backup and Restore app 
-(https://play.google.com/store/apps/details?id=com.riteshsahu.SMSBackupRestore)
+You can now use the resulting output file as a backup file to be restored with the SMS Backup and Restore app.
 
 ## Data examples
 These snippets of data are slightly trimmed down and "pretty formatted" examples
