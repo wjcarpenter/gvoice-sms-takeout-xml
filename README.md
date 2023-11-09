@@ -169,15 +169,24 @@ The phone number is the thing that matters in the backup files,
 so you probably don't have to do anything about these.
 If you wanted to go to a lot of trouble, 
 you could edit the HTML files to change the conflicting number to the one you prefer for that contact.
+If you have all of the conflicting numbers in your phone contact records,
+things will work out without your needing to do anything.
 
 Here is an example of this kind of informational message:
 ```
->> Info: conflicting information about "Susie Glow": +18885554321 +18775554444
-      due to File: "/home/wjc/t/Takeout/Voice/Calls/Susie Glow - Text - 2023-10-02T18_25_31Z.html"
+>> Info: conflicting information about "Joe Blow": +14255552222 {'+12065551111'}
+>>    due to File: "/home/wjc/t/Takeout/Voice/Calls/Joe Blow - 2017-12-03T00_39_16Z.html"
+>> Info: conflicting information about "Joe Blow": +18885551234 {'+12065551111', '+14255552222'}
+>>    due to File: "/home/wjc/t/Takeout/Voice/Calls/Joe Blow - Placed - 2023-09-26T20_48_32Z.html"
+>> Info: conflicting information about "Susie Glow": +18885554321 {'+12125553333'}
+>>    due to File: "/home/wjc/t/Takeout/Voice/Calls/Susie Glow - Received - 2014-12-19T01_30_10Z.html"
 ```
 To keep the noise down,
-there will be at most one such message for any given contact,
-regardless of how many different numbers are seen in the HTML files.
+there will be at most one such message for any newly discovered conflicting numbers for any given contact.
+In other words, for a contact with N different phone numbers in the HTML files,
+you would expect to see N-1 informational messages about conflicts.
+The number outside the `{braces}` is the most recently seen number,
+and the file named on the next line is where that number was first seen.
 The script will sometimes need to find a contact's phone number from the contact name.
 In cases of conflicts, the most recently seen number will be used.
 (That's known in some circles as "last writer wins".)

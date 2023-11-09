@@ -45,7 +45,7 @@ contacts = dict()
 
 # this is for some internal bookkeeping; you don't need to do anything with it.
 missing_contacts = set()
-conflicting_contacts = set()
+conflicting_contacts = dict()
 me = None
 
 # some global counters
@@ -793,11 +793,16 @@ def scan_vcards_for_contacts(parent_elt):
             if this_name == "Me":
                 me = this_number
             if this_name and existing_number:
-                if this_number != existing_number and not this_name in conflicting_contacts:  # only complain once per conflicting name
-                    conflicting_contacts.add(this_name)
-                    print()
-                    print(f'>> Info: conflicting information about "{this_name}":', existing_number, this_number)
-                    print(f'      due to File: "{html_filename_abs_path}"')
+                if this_number != existing_number:
+                    conflict_set = conflicting_contacts.get(this_name, None)
+                    if not conflict_set:
+                        conflict_set = set()
+                        conflict_set.add(existing_number)
+                    if not this_number in conflict_set:
+                        print(f'>> Info: conflicting information about "{this_name}":', this_number, conflict_set)
+                        print(f'>>    due to File: "{html_filename_abs_path}"')
+                    conflict_set.add(this_number)
+                    conflicting_contacts[this_name] = conflict_set
     return not_me_vcard_number
 
 def get_number_and_name_from_tel_elt_parent(parent_elt):
