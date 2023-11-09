@@ -1,12 +1,10 @@
 from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
 import warnings
-from fs.path import basename
 warnings.filterwarnings('ignore', category=MarkupResemblesLocatorWarning)
-from bs4.formatter import XMLFormatter, Formatter, HTMLFormatter
 from bs4.element import Comment
-from bs4.dammit import EntitySubstitution
 import re
 import os
+from fs.path import basename
 import phonenumbers
 import dateutil.parser
 import datetime
@@ -237,7 +235,7 @@ def write_sms_messages(html_target, message_elts):
     # Since the "address" element of an SMS is always the other end, scan the
     # message elements until we find a number this not "Me". Use that as the
     # address value for all of the SMS files in this HTML.
-    for __, message_elt in enumerate(message_elts):
+    for message_elt in message_elts:
         if other_party_number is None:
             other_party_number = scan_vcards_for_contacts(html_target, message_elt)
             if other_party_number is not None:
@@ -247,7 +245,7 @@ def write_sms_messages(html_target, message_elts):
     if other_party_number is None:
         other_party_number = get_sender_number_from_title_or_filename(html_target)
 
-    for __, message_elt in enumerate(message_elts):
+    for message_elt in message_elts:
         the_text = get_message_text(message_elt)
         message_type = get_message_type(message_elt)
         sent_by_me = (message_type == 2)
@@ -302,7 +300,7 @@ def write_mms_messages(html_target, participants_elt, message_elts):
 
     participants = get_participant_phone_numbers(participants_elt)
 
-    for i, message_elt in enumerate(message_elts):
+    for message_elt in message_elts:
         # TODO who is sender?
         not_me_vcard_number = scan_vcards_for_contacts(html_target, message_elt)
         sender = not_me_vcard_number
@@ -322,7 +320,7 @@ def write_mms_messages(html_target, participants_elt, message_elts):
 def get_attachment_elts(message_elt):
     attachments = []
     div_elts = message_elt.find_all('div')
-    for __, div_elt in enumerate(div_elts):
+    for div_elt in div_elts:
         img_elt = div_elt.find('img')
         if img_elt:
             attachments.append(img_elt)
@@ -361,8 +359,7 @@ def bs4_append_mms_elt_with_parts(parent_elt, html_target, attachment_elts, the_
         bs4_append_part_elts(parts_elt, html_target, attachment_elts)
 
 def bs4_append_part_elts(parent_elt, html_target, attachment_elts):
-    for i, attachment_elt in enumerate(attachment_elts):
-        sequence_number = i
+    for sequence_number, attachment_elt in enumerate(attachment_elts):
         if attachment_elt.name == 'img':
             attachment_file_ref = attachment_elt['src']
             bs4_append_part_elt(parent_elt, "image", sequence_number, html_target, attachment_file_ref)
