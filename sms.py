@@ -21,9 +21,9 @@ import isodate
 # "Takeout" as a subdirectory, and you should run this script from the
 # Takeout/Voice/Calls subdirectory.
 
-sms_backup_filename      = "../../../sms-gvoice-all.xml"
-call_backup_filename     = "../../../calls-gvoice-all.xml"
-vm_backup_filename       = "../../../sms-vm-gvoice-all.xml"
+sms_backup_filename  = "../../../sms-gvoice-all.xml"
+call_backup_filename = "../../../calls-gvoice-all.xml"
+vm_backup_filename   = "../../../sms-vm-gvoice-all.xml"
 
 # We sometimes see isolated messages from ourselves to someone, and the Takeout format
 # only identifies them by contact name instead of phone number. In such cases, we
@@ -40,10 +40,12 @@ vm_backup_filename       = "../../../sms-vm-gvoice-all.xml"
 
 # This file is *optional*
 contact_number_file = "../../../contacts.json"
+# The contacts JSON file, if present, is read into this dictionary, but discovered entries are also read into it.
 contacts = dict()
 
 # this is for some internal bookkeeping; you don't need to do anything with it.
 missing_contacts = set()
+conflicting_contacts = set()
 me = None
 
 # some global counters
@@ -53,13 +55,15 @@ num_vms = 0
 
 # I really don't like globals, but there are just too many things to tote around in all these function calls.
 subdir = None
+# The convention is to use a relative filename when emitting into the XML
+# and an absolute filename when printing a message for the person running the script.
 html_filename_basename = None
 html_filename_rel_path = None
 html_filename_abs_path = None
-filename_phone_number = None
-filename_contact_name = None
-title_phone_number = None
-title_contact_name = None
+phone_number_from_filename = None
+contact_name_from_filename = None
+phone_number_from_html_title = None
+contact_name_from_html_title = None
 html_elt = None
 
 def main():
@@ -75,6 +79,7 @@ def main():
             process_one_file(True, come_back_later)
 
     if not me and come_back_later:
+        print()
         print("Unfortunately, we can't figure out your own phone number.")
         print(os.path.abspath(contact_number_file) + ': TODO: add a +phonenumber for contact: "me": "+",')
     else:
@@ -107,8 +112,8 @@ def process_one_file(first_pass, come_back_later):
         tag_values.add(tag_value)
 
     scan_vcards_for_contacts(html_elt.body)
-    need_title_contact = title_contact_name and not contacts.get(title_contact_name, None)
-    need_filename_contact = filename_contact_name and not contacts.get(filename_contact_name, None)
+    need_title_contact = contact_name_from_html_title and not contacts.get(contact_name_from_html_title, None)
+    need_filename_contact = contact_name_from_filename and not contacts.get(contact_name_from_filename, None)
     if first_pass and (not me or need_title_contact or need_filename_contact):
         if "Text" in tag_values or "Voicemail" in tag_values or "Recorded" in tag_values:
             # Can't do anything rational for SMS/MMS if we don't know our own number.
@@ -122,9 +127,9 @@ def process_one_file(first_pass, come_back_later):
     if not first_pass:
         print(">> 2nd  pass:", html_filename_abs_path)
         # need to be firmer about mapping contact names to numbers!
-        if title_contact_name and not contact_name_to_number(title_contact_name):
+        if contact_name_from_html_title and not contact_name_to_number(contact_name_from_html_title):
             return
-        if filename_contact_name and not contact_name_to_number(filename_contact_name):
+        if contact_name_from_filename and not contact_name_to_number(contact_name_from_filename):
             return
 
     if   "Text"      in tag_values:  process_Text()
@@ -135,47 +140,6 @@ def process_one_file(first_pass, come_back_later):
     elif "Recorded"  in tag_values:  process_Voicemail()
     else:
         print("Unrecognized tag_value situation '" + str(tag_values) + "'; silently ignoring file '" + html_filename_rel_path + "'")
-
-# Information needs:
-#
-# Calls: 
-#
-#   number="%(telephone_number)s"     # phone number of the call
-#   duration="%(duration)s"           # duration of the call in seconds
-#   date="%(timestamp)s"              # Java date representation of the time when the call was sent/received
-#   type="%(type)s"                   # 1 = Incoming, 2 = Outgoing, 3 = Missed, 4 = Voicemail, 5 = Rejected, 6 = Refused List.
-#   presentation="%(presentation)s"   # caller id presentation info. 1 = Allowed, 2 = Restricted, 3 = Unknown, 
-#
-# simple SMS:
-#
-#   address="%(participants)s"         # phone number of the sender/recipient
-#   date="%(timestamp)s"               # Java date representation of the time when the message was sent/received.
-#   type="%(type)s"                    # 1 = Received, 2 = Sent
-#   body="%(message)s"                 # content of the message
-#
-# MMS for groups or with attachments
-#
-#   address="%(participants)s"         # phone number of the sender/recipient
-#   date="%(timestamp)s"               # Java date representation of the time when the message was sent/received
-#   m_type="%(m_type)s"                # The type of the message defined by MMS spec.
-#   msg_box="%(type)s"                 # 1 = Received, 2 = Sent
-#   text="%(the_text)s"                # content of the message (is this ever anything?)
-#   '%(participants_xml)s'             # address - phone number of the sender/recipient; type - 151 = To, 137 = From
-#
-# for IMG/AUDIO attachment
-#    ct="%(content_type)s"             # content type
-#    name="%(attachment_file)s"        # name of the part
-#    cl="%(attachment_file)s"          # content location
-#    data="%(img_data)s"               # base64 encoded binary content
-#
-
-# Naming conventions for things read from an HTML file:
-#   foo_elts   a collection of XML elements 
-#   foo_elt    a single XML element
-#   bar_attr   the value of an XML element "bar" attribute
-#   foo_value  the value (text content) of an XML element
-
-
 
 def process_Text():
     # This can be either SMS or MMS. MMS can be either with or without attachments.
@@ -211,7 +175,7 @@ def process_call(call_type):
     published_elt = html_elt.body.find(class_="published")
     readable_date = published_elt.get_text().replace("\r"," ").replace("\n"," ")
     iso_date = published_elt.attrs['title']
-    timestamp = to_timestamp(iso_date)
+    timestamp = get_time_unix(html_elt.body)
     duration_elt = html_elt.find(class_="duration")
     if not duration_elt:
         duration = 0
@@ -228,6 +192,7 @@ def contact_name_to_number(contact_name):
         return "0"
     contact_number = contacts.get(contact_name, None)
     if not contact_number and not contact_name in missing_contacts:
+        print()
         print(f'TODO: {os.path.abspath(contact_number_file)}: add a +phonenumber for contact: "{contact_name}": "+",')
         print(f'      due to File: "{html_filename_abs_path}"')
         # we add this fake entry to a dictionary so we don't keep complaining about the same thing
@@ -242,14 +207,14 @@ def contact_number_to_name(contact_number):
     return None
 
 def get_sender_number_from_title_or_filename():
-    if title_phone_number:
-        sender = title_phone_number
-    elif title_contact_name:
-        sender = contact_name_to_number(title_contact_name)
-    elif filename_phone_number:
-        sender = filename_phone_number
-    elif filename_contact_name:
-        sender = contact_name_to_number(filename_contact_name)
+    if phone_number_from_html_title:
+        sender = phone_number_from_html_title
+    elif contact_name_from_html_title:
+        sender = contact_name_to_number(contact_name_from_html_title)
+    elif phone_number_from_filename:
+        sender = phone_number_from_filename
+    elif contact_name_from_filename:
+        sender = contact_name_to_number(contact_name_from_filename)
     else:
         sender = None
     return sender
@@ -655,26 +620,23 @@ def get_participant_phone_numbers(participant_elt):
             participants.append(format_number(phone_number))
 
     if participants == []:
-        if title_phone_number is None:
-            title_phone_number = contact_name_to_number(title_contact_name)
-        participants.append(contact_name_to_number(title_phone_number))
+        if phone_number_from_html_title is None:
+            phone_number_from_html_title = contact_name_to_number(contact_name_from_html_title)
+        participants.append(contact_name_to_number(phone_number_from_html_title))
                 
     return participants
 
 def format_number(phone_number):
     return phonenumbers.format_number(phone_number, phonenumbers.PhoneNumberFormat.E164)
 
-def to_timestamp(iso_time):
-    time_obj = dateutil.parser.isoparse(iso_time);
-    mstime = timegm(time_obj.timetuple()) * 1000 + time_obj.microsecond / 1000
-    return int(mstime)
-
 def get_time_unix(message):
     time_elt = message.find(class_='dt')
     if not time_elt:
         time_elt = message.find(class_='published')
-    ymdhms = time_elt['title']
-    return to_timestamp(ymdhms)
+    iso_time = time_elt['title']
+    time_obj = dateutil.parser.isoparse(iso_time);
+    mstime = timegm(time_obj.timetuple()) * 1000 + time_obj.microsecond / 1000
+    return int(mstime)
 
 xml_header = u"<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>\n"
 def write_dummy_headers():
@@ -702,31 +664,30 @@ def write_dummy_headers():
     backup_file.close()
 
 def write_real_headers():
-    global num_sms, num_vms, num_calls
     print()
 
     if os.path.exists(sms_backup_filename):
         backup_file = open(sms_backup_filename, 'r+')
-        backup_file.write(u"<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>\n")
+        backup_file.write(xml_header)
         backup_file.write(u'<smses count="' + str(num_sms) + u'">\n')
         backup_file.close()
-    print(num_sms, "SMS/MMS records written to", sms_backup_filename)
+    print(">>", num_sms, "SMS/MMS records written to", sms_backup_filename)
 
     ################
     if os.path.exists(vm_backup_filename):
         backup_file = open(vm_backup_filename, 'r+')
-        backup_file.write(u"<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>\n")
+        backup_file.write(xml_header)
         backup_file.write(u'<smses count="' + str(num_vms) + u'">\n')
         backup_file.close()
-    print(num_vms, "Voicemail records written to", vm_backup_filename)
+    print(">>", num_vms, "Voicemail records written to", vm_backup_filename)
 
     ################
     if os.path.exists(call_backup_filename):
         backup_file = open(call_backup_filename, 'r+')
-        backup_file.write(u"<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>\n")
+        backup_file.write(xml_header)
         backup_file.write(u'<calls count="' + str(num_calls) + u'">\n')
         backup_file.close()
-    print(num_calls, "Call records written to", call_backup_filename)
+    print(">>", num_calls, "Call records written to", call_backup_filename)
 
 def prep_output_files():
     sms_backup_filename_BAK = sms_backup_filename + '.BAK'
@@ -775,27 +736,27 @@ def prep_output_files():
 # In some extreme cases, we have to pick our the correspondent from the name
 # of the file. It can be a phone number or a contact name, or it can be completely missing.
 def get_name_or_number_from_filename():
-    global filename_phone_number, filename_contact_name
-    filename_phone_number = None
-    filename_contact_name = None
+    global phone_number_from_filename, contact_name_from_filename
+    phone_number_from_filename = None
+    contact_name_from_filename = None
     # phone number with optional "+"
     match_phone_number = re.match(r'(\+?[0-9]+) - ', html_filename_basename)
     if match_phone_number:
-        filename_phone_number = match_phone_number.group(1)
+        phone_number_from_filename = match_phone_number.group(1)
     else:
         # sometimes a single " - ", sometimes two of them
         match_name = re.match(r'([^ ].*) - .+ - ', html_filename_basename)
         if not match_name:
             match_name = re.match(r'([^ ].*) - ', html_filename_basename)
         if match_name:
-            filename_contact_name = match_name.group(1)
-            if filename_contact_name == "Group Conversation":
-                filename_contact_name = None
+            contact_name_from_filename = match_name.group(1)
+            if contact_name_from_filename == "Group Conversation":
+                contact_name_from_filename = None
 
 def get_name_or_number_from_title():
-    global title_phone_number, title_contact_name
-    title_phone_number = None
-    title_contact_name = None
+    global phone_number_from_html_title, contact_name_from_html_title
+    phone_number_from_html_title = None
+    contact_name_from_html_title = None
     title_elt = html_elt.find('head').find('title')
     title_value = title_elt.get_text()
     # Takeout puts a newline in the middle of the title
@@ -808,29 +769,35 @@ def get_name_or_number_from_title():
     match_phone_number = re.match(r'(\+?[0-9]+)', correspondent)
     if match_phone_number:
         # I think this doesn't actually happen
-        title_phone_number = match_phone_number.group(1)
+        phone_number_from_html_title = match_phone_number.group(1)
     else:
-        title_contact_name = correspondent
-        if title_contact_name == "Group Conversation":
-            title_contact_name = None
+        contact_name_from_html_title = correspondent
+        if contact_name_from_html_title == "Group Conversation":
+            contact_name_from_html_title = None
 
 # Iterate all of the vcards in the HTML body to speculatively populate the
 # contacts list. Also make a note of a contact which is "not me" for
 # use as the address in an SMS record (it's always "the other end"). The
 # same logic does not apply to MMS, which has a different scheme for address.
-def scan_vcards_for_contacts(elt_parent):
+def scan_vcards_for_contacts(parent_elt):
     global me
     not_me_vcard_number = None
-    vcard_elts = elt_parent.find_all(class_="vcard")
-    for i in range(len(vcard_elts)):
-        vcard_elt = vcard_elts[i]
+    vcard_elts = parent_elt.find_all(class_="vcard")
+    for vcard_elt in vcard_elts:
         this_number, this_name = get_number_and_name_from_tel_elt_parent(vcard_elt)
         if this_number:
+            not_me_vcard_number = this_number
+            # In case of conflicts, last writer wins
+            existing_number = contacts.get(this_name, None)
+            contacts[this_name] = this_number
             if this_name == "Me":
                 me = this_number
-            else:
-                contacts[this_name] = this_number
-                not_me_vcard_number = this_number
+            if this_name and existing_number:
+                if this_number != existing_number and not this_name in conflicting_contacts:  # only complain once per conflicting name
+                    conflicting_contacts.add(this_name)
+                    print()
+                    print(f'>> Info: conflicting information about "{this_name}":', existing_number, this_number)
+                    print(f'      due to File: "{html_filename_abs_path}"')
     return not_me_vcard_number
 
 def get_number_and_name_from_tel_elt_parent(parent_elt):

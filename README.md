@@ -10,6 +10,7 @@ Although the HTML files, like any HTML files, exhibit a certain structure,
 the actual format used by Google Takeout is not documented.
 (At least, I have not been able to find any documentation.
 I'd be glad to be proven wrong, so if you know of some documentation, do please let me know.)
+The structure is oriented toward viewing the information in a browser.
 Consequently, pulling information out of those HTML files is just reverse engineering.
 There are many special cases.
 The script deals with all of the special cases that I know about,
@@ -41,13 +42,15 @@ Reverse engineering is a hazardous business.
 There are already many special cases and oddities dealt with by the script.
 There are undoubtedly more that I either didn't happen to encounter, 
 or that I didn't notice.
+Google could at any time change the format of the Google Takeout files, 
+or (less likely) SMS Backup and Restore could change the requirements for backup files.
 I welcome you bringing additional things like that to my attention,
 though fixing them up is the usual freebie "best effort" sort of thing.
 Undoubtedly, after some months or years, 
 I'll myself become a little hazy on the workings of the script,
 and that might add some time.
 
-The best evidence is the original HTML file that prevokes the issue.
+The best evidence to give is the original HTML file that provokes the issue.
 The script usually names a specific file that gives it a headache,
 but sometimes it will not know that it's misbehaving, 
 in which case you have a little detective work to do.
@@ -99,7 +102,9 @@ The script produces three separate output files.
 If there is a transcript, it is included as a text part of the MMS message.
 A voicemail also creates a record in the "calls" file, without the recording or transcript.)
 
-### Missing contacts
+### Command line options
+
+### Missing and conflicting contacts
 In the Google Takeout data, there are some edge cases where it's impossible to figure out the contact phone number.
 It's not too important for you to understand those edge cases,
 but the script works hard to deal with them.
@@ -129,8 +134,10 @@ Here are some examples of the kinds of TODO messages you might see:
 ```
 Unfortunately, we can't figure out your own phone number.
 TODO: /home/wjc/t/contacts.json: add a +phonenumber for contact: "me": "+",
+
 TODO: /home/wjc/t/contacts.json: add a +phonenumber for contact: "Joe Blow": "+",
       due to File: "/home/wjc/t/Takeout/Voice/Calls/Joe Blow - Text - 2023-10-22T17_28_34Z.html"
+
 TODO: /home/wjc/t/contacts.json: add a +phonenumber for contact: "Susie Glow": "+",
       due to File: "/home/wjc/t/Takeout/Voice/Calls/Susie Glow - Text - 2023-10-22T17_28_34Z.html"
 ```
@@ -155,11 +162,32 @@ Rerun the script until you get no errors and no warnings about missing contact p
 
 You can now use the resulting output file as a backup file to be restored with the SMS Backup and Restore app.
 
+You might also see some informational notices about conflicting numbers for contacts.
+This can happen if one of your contacts has multiple phone numbers, 
+including having changed phone numbers over time.
+The phone number is the thing that matters in the backup files,
+so you probably don't have to do anything about these.
+If you wanted to go to a lot of trouble, 
+you could edit the HTML files to change the conflicting number to the one you prefer for that contact.
+
+Here is an example of this kind of informational message:
+```
+>> Info: conflicting information about "Susie Glow": +18885554321 +18775554444
+      due to File: "/home/wjc/t/Takeout/Voice/Calls/Susie Glow - Text - 2023-10-02T18_25_31Z.html"
+```
+To keep the noise down,
+there will be at most one such message for any given contact,
+regardless of how many different numbers are seen in the HTML files.
+The script will sometimes need to find a contact's phone number from the contact name.
+In cases of conflicts, the most recently seen number will be used.
+(That's known in some circles as "last writer wins".)
+
 ## Data examples
 These snippets of data are slightly trimmed down and "pretty formatted" examples
 from either the Google Takeout HTML files or the SMS Backup and Restore back up files.
 You don't need to look at any of this to use the script.
 This is mostly put here for my own reference as I worked through cases.
+It is not a complete set of all the possible variants.
 
 ### A single text SMS (from Takeout)
 ```
