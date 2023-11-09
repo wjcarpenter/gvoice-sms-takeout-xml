@@ -104,7 +104,7 @@ A voicemail also creates a record in the "calls" file, without the recording or 
 
 ### Command line options
 
-### Missing and conflicting contacts
+### Missing contacts
 In the Google Takeout data, there are some edge cases where it's impossible to figure out the contact phone number.
 It's not too important for you to understand those edge cases,
 but the script works hard to deal with them.
@@ -162,6 +162,7 @@ Rerun the script until you get no errors and no warnings about missing contact p
 
 You can now use the resulting output file as a backup file to be restored with the SMS Backup and Restore app.
 
+### Conflicting contact numbers
 You might also see some informational notices about conflicting numbers for contacts.
 This can happen if one of your contacts has multiple phone numbers, 
 including having changed phone numbers over time.
@@ -171,6 +172,16 @@ If you wanted to go to a lot of trouble,
 you could edit the HTML files to change the conflicting number to the one you prefer for that contact.
 If you have all of the conflicting numbers in your phone contact records,
 things will work out without your needing to do anything.
+If you don't have one of those numbers for the contact,
+then the record will show up as just the phone number and no contact name.
+
+Why can't we just take care of this?
+Well, the way things are stored on your phone is with separate
+databases for contacts, messages, and calls.
+We're only updating the messages and calls.
+We're not touching the contacts,
+so we can't add numbers to them.
+It's the phone numbers in the messages and calls that ties things together.
 
 Here is an example of this kind of informational message:
 ```

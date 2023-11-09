@@ -237,8 +237,7 @@ def write_sms_messages(message_elts):
     # Since the "address" element of an SMS is always the other end, scan the
     # message elements until we find a number this not "me". Use that as the
     # address value for all of the SMS files in this HTML.
-    for i in range(len(message_elts)):
-        message_elt = message_elts[i]
+    for __, message_elt in enumerate(message_elts):
         if other_party_number is None:
             other_party_number = scan_vcards_for_contacts(message_elt)
             if other_party_number is not None:
@@ -250,8 +249,7 @@ def write_sms_messages(message_elts):
 
     backup_file = open(sms_backup_filename, 'a')
 
-    for i in range(len(message_elts)):
-        message_elt = message_elts[i]
+    for __, message_elt in enumerate(message_elts):
         the_text = get_message_text(message_elt)
         message_type = get_message_type(message_elt)
         sent_by_me = (message_type == 2)
@@ -313,8 +311,7 @@ def write_mms_messages(participants_elt, message_elts):
 
     participants = get_participant_phone_numbers(participants_elt)
 
-    for i in range(len(message_elts)):
-        message_elt = message_elts[i]
+    for i, message_elt in enumerate(message_elts):
         # TODO who is sender?
         not_me_vcard_number = scan_vcards_for_contacts(message_elt)
         sender = not_me_vcard_number
@@ -337,8 +334,7 @@ def write_mms_messages(participants_elt, message_elts):
 def get_attachment_elts(message_elt):
     attachments = []
     div_elts = message_elt.find_all('div')
-    for i in range(len(div_elts)):
-        div_elt = div_elts[i]
+    for __, div_elt in enumerate(div_elts):
         img_elt = div_elt.find('img')
         if img_elt:
             attachments.append(img_elt)
@@ -377,8 +373,7 @@ def bs4_append_mms_elt_with_parts(parent_elt, attachment_elts, the_text, sender,
         bs4_append_part_elts(parts_elt, attachment_elts)
 
 def bs4_append_part_elts(parent_elt, attachment_elts):
-    for i in range(len(attachment_elts)):
-        attachment_elt = attachment_elts[i]
+    for i, attachment_elt in enumerate(attachment_elts):
         sequence_number = i
         if attachment_elt.name == 'img':
             attachment_file_ref = attachment_elt['src']
