@@ -102,6 +102,9 @@ The script produces three separate output files.
 If there is a transcript, it is included as a text part of the MMS message.
 A voicemail also creates a record in the "calls" file, without the recording or transcript.)
 
+Why is there a separate file for voicemail MMS messages?
+It's done that way in case you don't want to include those with the other SMS and MMS messages when you do the restore operation.
+
 ### Command line options
 
 ### Missing contacts
@@ -133,7 +136,7 @@ Otherwise, a lot of MMS attachments will be detected as duplicates and will neve
 Here are some examples of the kinds of TODO messages you might see:
 ```
 Unfortunately, we can't figure out your own phone number.
-TODO: /home/wjc/t/contacts.json: add a +phonenumber for contact: "me": "+",
+TODO: /home/wjc/t/contacts.json: add a +phonenumber for contact: "Me": "+",
 
 TODO: /home/wjc/t/contacts.json: add a +phonenumber for contact: "Joe Blow": "+",
       due to File: "/home/wjc/t/Takeout/Voice/Calls/Joe Blow - Text - 2023-10-22T17_28_34Z.html"
@@ -141,26 +144,28 @@ TODO: /home/wjc/t/contacts.json: add a +phonenumber for contact: "Joe Blow": "+"
 TODO: /home/wjc/t/contacts.json: add a +phonenumber for contact: "Susie Glow": "+",
       due to File: "/home/wjc/t/Takeout/Voice/Calls/Susie Glow - Text - 2023-10-22T17_28_34Z.html"
 ```
-The TODO for `me` is a special case.
-The script couldn't figure out your phone number, so you have to provide it via that fake entry in the JSON file.
+The TODO for `Me` is a special case.
+The script couldn't figure out your phone number (which it usually can do), 
+so you have to provide it via that fake entry in the JSON file.
 
 If you get any of those messages, add entries for those contacts into the JSON file.
-You can probably copy and paste the end of the TODO line and just supply the missing phone number.
 Obviously, create that file if you haven't done so earlier.
+You can probably copy and paste the end of the TODO line and just supply the missing phone number.
 That will give you something like:
 ```
 {
-  "me": "+441234567890",
+  "Me": "+441234567890",
   "Susie Glow": "+18885554321",
   "Joe Blow": "+18885551234"
 }
 ```
 Add the contact name exactly as shown in the TODO message. 
+Contact names, including `Me`, are case-sensitive.
 Don't forget to include the `+` and the country code with the phone number. 
 The order of items in that file doesn't matter, but the python JSON parser requires a comma after each item except the final one.
-Rerun the script until you get no errors and no warnings about missing contact phone numbers.
+Rerun the script until you get no TODO reports about missing contact phone numbers and no other errors.
 
-You can now use the resulting output file as a backup file to be restored with the SMS Backup and Restore app.
+You can now use the resulting output files as a backup file to be restored with the SMS Backup and Restore app.
 
 ### Conflicting contact numbers
 You might also see some informational notices about conflicting numbers for contacts.

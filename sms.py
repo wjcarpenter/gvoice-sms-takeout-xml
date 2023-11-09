@@ -34,7 +34,7 @@ vm_backup_file   = None
 # consult this optional JSON file to map  the name to a phone number (which should
 # include the "+" and country code and no other punctuation). Must be valid JSON, eg:
 # {
-#   "me": "+441234567890",
+#   "Me": "+441234567890",
 #   "Joe Blow": "+18885551234",
 #   "Susie Glow": "+18885554321"
 # }
@@ -50,7 +50,6 @@ contacts = dict()
 # this is for some internal bookkeeping; you don't need to do anything with it.
 missing_contacts = set()
 conflicting_contacts = dict()
-me = None
 
 # some global counters
 num_sms = 0
@@ -82,12 +81,13 @@ def main():
                 html_target = (subdirectory, html_basename)
                 process_one_file(True, html_target, come_back_later)
 
-        if not me and come_back_later:
+        me_contact = contacts.get('Me', None)
+        if not me_contact and come_back_later:
             print()
             print("Unfortunately, we can't figure out your own phone number.")
-            print(os.path.abspath(contact_number_file) + ': TODO: add a +phonenumber for contact: "me": "+",')
+            print(os.path.abspath(contact_number_file) + ': TODO: add a +phonenumber for contact: "Me": "+",')
         else:
-            print(">> Your 'me' phone number is", me)
+            print(">> Your 'Me' phone number is", me_contact)
             for html_target in come_back_later:
                 process_one_file(False, html_target, come_back_later)
 
@@ -116,7 +116,8 @@ def process_one_file(is_first_pass, html_target, come_back_later):
     scan_vcards_for_contacts(html_target, html_elt.body)
     need_title_contact = contact_name_from_html_title and not contacts.get(contact_name_from_html_title, None)
     need_filename_contact = contact_name_from_filename and not contacts.get(contact_name_from_filename, None)
-    if is_first_pass and (not me or need_title_contact or need_filename_contact):
+    me_contact = contacts.get('Me', None)
+    if is_first_pass and (not me_contact or need_title_contact or need_filename_contact):
         if "Text" in tag_values or "Voicemail" in tag_values or "Recorded" in tag_values:
             # Can't do anything rational for SMS/MMS if we don't know our own number.
             # We _might_ be able to get along without the phone numbers for the contacts
@@ -234,7 +235,7 @@ def write_sms_messages(html_target, message_elts):
     global num_sms, num_vms, num_calls
     other_party_number = None
     # Since the "address" element of an SMS is always the other end, scan the
-    # message elements until we find a number this not "me". Use that as the
+    # message elements until we find a number this not "Me". Use that as the
     # address value for all of the SMS files in this HTML.
     for __, message_elt in enumerate(message_elts):
         if other_party_number is None:
@@ -242,7 +243,7 @@ def write_sms_messages(html_target, message_elts):
             if other_party_number is not None:
                 break
     # This will be the case if the HTML file contains only a single SMS
-    # that was sent by "me". Use fallbacks.
+    # that was sent by "Me". Use fallbacks.
     if other_party_number is None:
         other_party_number = get_sender_number_from_title_or_filename(html_target)
 
@@ -475,8 +476,9 @@ def bs4_append_text_part_elt(elt_parent, the_text):
 def bs4_append_addrs_elt(elt_parent, participants, sender, sent_by_me):
     addrs_elt = html_elt.new_tag('addrs')
     elt_parent.append(addrs_elt)
-    for participant in participants + [me]:
-        participant_is_sender = ((participant == sender) or (sent_by_me and participant == me))
+    me_contact = contacts.get("Me")
+    for participant in participants + [me_contact]:
+        participant_is_sender = ((participant == sender) or (sent_by_me and participant == me_contact))
         addr_elt = html_elt.new_tag('addr')
 
         # address - The phone number of the sender/recipient.
@@ -778,8 +780,6 @@ def scan_vcards_for_contacts(html_target, parent_elt):
             # In case of conflicts, last writer wins
             existing_number = contacts.get(this_name, None)
             contacts[this_name] = this_number
-            if this_name == "Me":
-                me = this_number
             if this_name and existing_number:
                 if this_number != existing_number:
                     conflict_set = conflicting_contacts.get(this_name, None)
