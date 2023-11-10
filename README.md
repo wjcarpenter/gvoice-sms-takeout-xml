@@ -1,5 +1,6 @@
 # gvoice-sms-takeout-xml
 Convert Google Voice data from Google Takeout to XML files suitable for use with SMS Backup and Restore.
+Find this code repository at <https://github.com/wjcarpenter/gvoice-sms-takeout-xml>.
 
 Google Takeout, 
 <https://takeout.google.com>,
@@ -33,6 +34,7 @@ which is itself a fork of <https://github.com/calyptecc/gvoice-sms-takeout-xml>.
 Although I have made a massive number of changes, 
 so that it does not look much like the originals any more (perhaps it's not even recognizable),
 I have kept the same repo name and script name for the sake of being easily found.
+I'm grateful to those earlier authors for giving me a starting point.
 
 This fork corrects several problems I ran into when using the original scripts.
 I also added some significant additional features.
@@ -106,6 +108,43 @@ Why is there a separate file for voicemail MMS messages?
 It's done that way in case you don't want to include those with the other SMS and MMS messages when you do the restore operation.
 
 ### Command line options
+
+The easiest way to use this script is as described above,
+but there are optional command line arguments for changing various locations and files.
+You can get the latest information about command line arguments by running the script with the single argument `-h` or `--help`.
+```
+usage: sms.py [-h] [-s SMS_BACKUP_FILENAME] [-v VM_BACKUP_FILENAME]
+              [-c CALL_BACKUP_FILENAME] [-j CONTACTS_FILENAME] [-d DIRECTORY]
+              [-q]
+
+Convert Google Takeout HTML files to SMS Backup and Restore XML files.
+
+options:
+  -h, --help            show this help message and exit
+  -s SMS_BACKUP_FILENAME, --sms_backup_filename SMS_BACKUP_FILENAME
+                        File to receive SMS/MMS messages. Defaults to
+                        ../../../sms-gvoice-all.xml
+  -v VM_BACKUP_FILENAME, --vm_backup_filename VM_BACKUP_FILENAME
+                        File to receive voicemail MMS messages. Defaults to
+                        ../../../sms-vm-gvoice-all.xml
+  -c CALL_BACKUP_FILENAME, --call_backup_filename CALL_BACKUP_FILENAME
+                        File to receive call history records. Defaults to
+                        ../../../calls-gvoice-all.xml
+  -j CONTACTS_FILENAME, --contacts_filename CONTACTS_FILENAME
+                        JSON formatted file of contact name/number pairs.
+                        Defaults to ../../../contacts.json
+  -d DIRECTORY, --directory DIRECTORY
+                        The directory containing the HTML files, typically the
+                        "Takeout/Voice/Calls/" subdirectory. Defaults to the
+                        current directory.
+  -q, --quiet           Be a little quieter. Give this flag twice to be very
+                        quiet.
+
+All command line arguments are optional and have reasonable defaults when run
+from within Takeout/Voice/Calls/. The contacts file is optional. Output files
+should be named "sms-SOMETHING.xml" or "calls-SOMETHING.xml. See the README at
+https://github.com/wjcarpenter/gvoice-sms-takeout-xml for more information.
+```
 
 ### Missing contacts
 In the Google Takeout data, there are some edge cases where it's impossible to figure out the contact phone number.
