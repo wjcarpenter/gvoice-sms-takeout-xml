@@ -25,8 +25,8 @@ and the app gives you several choices for where to keep them.
 The XML format is mostly -- but not completely -- documented.
 
 The script reads the files from Google Takeout and produces files in the XML format for SMS Backup and Restore.
-The idea is that you then use those XML files to do a "restore" with the app.
-That transfers your Google Voice history into your phones native history.
+The idea is that you then use those XML files to do a `restore` with the app.
+That transfers your Google Voice history into your phone's native history.
 
 ## This fork
 This is a fork of <https://github.com/karlrees/gvoice-sms-takeout-xml>,
@@ -34,33 +34,37 @@ which is itself a fork of <https://github.com/calyptecc/gvoice-sms-takeout-xml>.
 Although I have made a massive number of changes, 
 so that it does not look much like the originals any more (perhaps it's not even recognizable),
 I have kept the same repo name and script name for the sake of being easily found.
-I'm grateful to those earlier authors for giving me a starting point.
+I'm grateful to those earlier authors for giving me a starting point,
+but there's not much of their code left.
 
 This fork corrects several problems I ran into when using the original scripts.
 I also added some significant additional features.
 
-### Apologia
+## Apologia
 Reverse engineering is a hazardous business.
 There are already many special cases and oddities dealt with by the script.
 There are undoubtedly more that I either didn't happen to encounter, 
 or that I didn't notice.
 Google could at any time change the format of the Google Takeout files, 
 or (less likely) SMS Backup and Restore could change the requirements for backup files.
-I welcome you bringing additional things like that to my attention,
+I welcome you to bring additional things like that to my attention,
 though fixing them up is the usual freebie "best effort" sort of thing.
 Undoubtedly, after some months or years, 
 I'll myself become a little hazy on the workings of the script,
 and that might add some time.
 
-The best evidence to give is the original HTML file that provokes the issue.
-The script usually names a specific file that gives it a headache,
-but sometimes it will not know that it's misbehaving, 
+When asking questions or reporting issues,
+the best evidence to give is the original HTML file that provokes the issue.
+The script usually names a specific file that gives it a headache.
+Sometimes the script will not know that it's misbehaving, 
 in which case you have a little detective work to do.
 In the XML outputs, input file names are includes as XML comments.
 For the case of being unable to find referenced attachments,
 it's probably some new quirk of the trial and error way the script has of figuring it out.
+(There are some bugs/mistakes in the Google Takeout attachment file names
+so that they also can't be found in the browser view of the collection.)
 I don't need to see the actual attachment file (MP3 or JPEG or whatever),
-but I do need to know what it's filename is.
+but I do need to know what its exact filename is.
 
 You have these choices for reporting things:
 
@@ -69,18 +73,19 @@ If you do this, please limit the PR to a single thing to make it easy for me to 
 (If you are an experienced python programmer, 
 you will probably be tempted to "fix up" my clumsy style.
 That's OK with me, 
-but I'd rather those sorts of things come as their own PRs rather than intermingled with more substantive stuff.)
+but I'd rather those sorts of things came as their own PRs rather than intermingled with more substantive stuff.)
 - Open an issue describing the problem.
+See the GitHub repository link above.
 Don't worry if you don't know exactly what's going on.
 I just need enough information to figure it out.
-- You can also post in this repository's discussion area.
+- You can also post in the repository's discussion area.
 That might be the best way to go if you are not sure you are really seeing a new problem.
 
 ## How to use this script
-You want to use python3 to run this, 
-and you may have to "pip install" some of the imported modules if you don't happen to already have them.
+You want to use Python 3 to run this, 
+and you may have to `pip install` some of the imported modules if you don't happen to already have them.
 If you don't know what any of that means, 
-contact the nearest smart aleck kid and get them to help you.
+contact the nearest smart alecky kid and get them to help you.
 
 - Save sms.py in some convenient location. Let's call that location `/some/bin/sms.py`. It is a python script that requires Python 3.
 - Use Google Takeout to download Google Voice messages. That will give you a file named `takeout-`_something-something_`.zip`.
@@ -89,9 +94,11 @@ The Google Voice files will be in a directory `Takeout/Voice/Calls/`, aka `/some
 - In a terminal window, go to directory `/someplace/t/Takeout/Voice/Calls/`.
 - Run the python script, for example, `python /some/bin/sms.py` or `python3 /some/bin/sms.py`.
 - If you get python errors, it is most likely because you are missing some of the imported modules. 
-Use PIP to install them until python stops complaining. 
+Use `pip` to install them until python stops complaining. 
 For example, `pip install bs4`.
 - When the script starts running correctly, it will announce the locations of inputs and outputs and other helpful information.
+- If the script sees problems in the information, it will report them to you.
+See the information below about missing contacts.
 
 ### Output files
 The script produces three separate output files.
@@ -106,6 +113,7 @@ A voicemail also creates a record in the "calls" file, without the recording or 
 
 Why is there a separate file for voicemail MMS messages?
 It's done that way in case you don't want to include those with the other SMS and MMS messages when you do the restore operation.
+SMS Backup and Restore will let you choose which files you want to use for `restore`.
 
 ### Command line options
 
@@ -142,29 +150,34 @@ options:
 
 All command line arguments are optional and have reasonable defaults when run
 from within Takeout/Voice/Calls/. The contacts file is optional. Output files
-should be named "sms-SOMETHING.xml" or "calls-SOMETHING.xml. See the README at
+should be named "sms-SOMETHING.xml" or "calls-SOMETHING.xml". See the README at
 https://github.com/wjcarpenter/gvoice-sms-takeout-xml for more information.
 ```
 
 ### Missing contacts
-In the Google Takeout data, there are some edge cases where it's impossible to figure out the contact phone number.
+In the Google Takeout data, 
+there are some edge cases where it's impossible to figure out the contact phone number for a particular HTML input file.
 It's not too important for you to understand those edge cases,
 but the script works hard to deal with them.
+
 Two main techniques are used.
-First, we notice name to number mappings as we encounter them along the way, so we might be able to figure it out automatically. 
-For anything that can't be resolved when the file is first read, we save it for a second pass, hoping that we figure it out from a later file.
+- First, the script notices name-to-number mappings as it encounters them along the way in HTML files, 
+so it might be able to figure it out automatically. 
+For anything that can't be resolved when the HTML file is first read, 
+the file is saved for a second pass, hoping that it can be figured out from a later file.
 For those kinds of files, you'll first see a message that processing was "Deferred",
 and then later a message that a "2nd pass" is being attempted.
-Second, if we can't figure it out by that second pass, we emit a message asking the user to add an entry to a JSON file and re-run.
+- Second, if the script can't figure it out by that second pass, 
+it emits a "TODO" message asking the user to add an entry to a JSON file and re-run.
 If you see those deferred and second pass messages, 
 you don't have to worry about them unless there is a "TODO" message telling you to add a contact number to the JSON file.
 If you don't see any TODO messages (most people will not), then the script figured everything out.
 
-If we didn't deal with the edge cases, 
+If the script didn't deal with the edge cases, 
 it would be possible to see things either mapped to the number "0" or without any number at all 
 (which will show up as something like "Unknown caller") instead of being mapped to the correct contact.
 
-SMS Backup and Restore is pretty good at duplicate detection, 
+SMS Backup and Restore is pretty good at duplicate detection during restore operations, 
 but if you make a mistake and have things ending up in "0" or "Unknown caller" or other strange places, 
 delete those entire SMS/MMS conversations from your phone, 
 fix up your run of this script, 
@@ -200,11 +213,12 @@ That will give you something like:
 ```
 Add the contact name exactly as shown in the TODO message. 
 Contact names, including `Me`, are case-sensitive.
-Don't forget to include the `+` and the country code with the phone number. 
+Don't forget to include the `+` and the country code with the phone number
+(and no other punctuation ... just the `+` and digits). 
 The order of items in that file doesn't matter, but the python JSON parser requires a comma after each item except the final one.
 Rerun the script until you get no TODO reports about missing contact phone numbers and no other errors.
 
-You can now use the resulting output files as a backup file to be restored with the SMS Backup and Restore app.
+You can now use the resulting output files as a backup files to be restored with the SMS Backup and Restore app.
 
 ### Conflicting contact numbers
 You might also see some informational notices about conflicting numbers for contacts.
@@ -225,7 +239,7 @@ databases for contacts, messages, and calls.
 We're only updating the messages and calls.
 We're not touching the contacts,
 so we can't add numbers to them.
-It's the phone numbers in the messages and calls that ties things together.
+It's the phone numbers in the messages and calls that tie things together.
 
 Here is an example of this kind of informational message:
 ```
@@ -242,6 +256,6 @@ In other words, for a contact with N different phone numbers in the HTML files,
 you would expect to see N-1 informational messages about conflicts.
 The number outside the `{braces}` is the most recently seen number,
 and the file named on the next line is where that number was first seen.
-The script will sometimes need to find a contact's phone number from the contact name.
+The script will sometimes need to find a contact's phone number from the contact name (usually not).
 In cases of conflicts, the most recently seen number will be used.
 (That's known in some circles as "last writer wins".)

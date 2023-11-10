@@ -81,7 +81,7 @@ def main():
     description = 'Convert Google Takeout HTML files to SMS Backup and Restore XML files.'
     epilog = ('All command line arguments are optional and have reasonable defaults when run from within "Takeout/Voice/Calls/". '
         'The contacts file is optional. '
-        'Output files should be named "sms-SOMETHING.xml" or "calls-SOMETHING.xml. '
+        'Output files should be named "sms-SOMETHING.xml" or "calls-SOMETHING.xml". '
         "See the README at https://github.com/wjcarpenter/gvoice-sms-takeout-xml for more information.")
     argparser = argparse.ArgumentParser(description=description, epilog=epilog)
     argparser.add_argument('-s', '--sms_backup_filename', default=sms_backup_filename, help=f"File to receive SMS/MMS messages. Defaults to {sms_backup_filename}")
