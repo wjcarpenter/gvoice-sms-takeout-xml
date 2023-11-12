@@ -15,7 +15,7 @@ import json
 import isodate
 import argparse
 
-__updated__ = "2023-11-12 12:18"
+__updated__ = "2023-11-12 13:34"
 
 # SMS Backup and Restore likes to notice filename that start with "sms-"
 # Save it to the great-grandparent directory because it can otherwise be hard to find amongst
@@ -427,9 +427,9 @@ def bs4_append_sms_elt(parent_elt, sender, timestamp, the_text, message_type):
     # readable_date - Optional field that has the date in a human readable format.
     # contact_name - Optional field that has the name of the contact.
 
-def bs4_append_mms_elt_with_parts(parent_elt, html_target, attachment_elts, the_text, sender, sent_by_me, timestamp, msgbox_type, participants):
+def bs4_append_mms_elt_with_parts(parent_elt, html_target, attachment_elts, the_text, other_party_number, sent_by_me, timestamp, msgbox_type, participants):
     m_type = 128 if sent_by_me else 132
-    bs4_append_mms_elt(parent_elt, participants, timestamp, m_type, msgbox_type, sender, sent_by_me, the_text)
+    bs4_append_mms_elt(parent_elt, participants, timestamp, m_type, msgbox_type, other_party_number, sent_by_me, the_text)
     mms_elt = parent_elt.mms
 
     if attachment_elts:
@@ -448,11 +448,11 @@ def bs4_append_mms_elt_with_parts(parent_elt, html_target, attachment_elts, the_
                 print(f'>> Unrecognized MMS attachment in HTML file (skipped):\n>> {attachment_elt}')
                 print(f'>>     due to File: "{get_abs_path(html_target)}"')
 
-def bs4_append_mms_elt(parent_elt, participants, timestamp, m_type, msgbox_type, sender, sent_by_me, the_text):
+def bs4_append_mms_elt(parent_elt, participants, timestamp, m_type, msgbox_type, other_party_number, sent_by_me, the_text):
     mms_elt = html_elt.new_tag('mms')
     parent_elt.append(mms_elt)
 
-    bs4_append_addrs_elt(mms_elt, participants, sender, sent_by_me)
+    bs4_append_addrs_elt(mms_elt, participants, other_party_number, sent_by_me)
 
     parts_elt = html_elt.new_tag('parts')
     mms_elt.append(parts_elt)
@@ -545,12 +545,17 @@ def bs4_append_part_elt(parent_elt, attachment_type, sequence_number, html_targe
         # data - The base64 encoded binary content of the part.
         part_elt['data'] = attachment_data
 
-def bs4_append_addrs_elt(elt_parent, participants, sender, sent_by_me):
+def bs4_append_addrs_elt(elt_parent, participants, other_party_number, sent_by_me):
     addrs_elt = html_elt.new_tag('addrs')
     elt_parent.append(addrs_elt)
     me_contact = contacts_keyed_by_name.get("Me")
     for participant in participants + [me_contact]:
-        participant_is_sender = ((participant == sender) or (sent_by_me and participant == me_contact))
+        if sent_by_me and participant == me_contact:
+            participant_is_sender = True
+        elif not sent_by_me and participant == other_party_number:
+            participant_is_sender = True
+        else:
+            participant_is_sender = False
         addr_elt = html_elt.new_tag('addr')
 
         # address - The phone number of the sender/recipient.
