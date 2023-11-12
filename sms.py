@@ -15,7 +15,7 @@ import json
 import isodate
 import argparse
 
-__updated__ = "2023-11-11 12:24"
+__updated__ = "2023-11-12 09:35"
 
 # SMS Backup and Restore likes to notice filename that start with "sms-"
 # Save it to the great-grandparent directory because it can otherwise be hard to find amongst
@@ -224,7 +224,9 @@ def process_Text_from_html_file(html_target):
 
 def process_Voicemail_from_html_file(html_target):
     # For a voicemail, we write a call record and also an MMS record with the recording attached.
-    process_call_from_html_file(html_target, 4)
+    # The app doesn't like type 4 (voicemail) in a call record, so we emit type 3 (missed call),
+    # which is kinda sorta correct.
+    process_call_from_html_file(html_target, 3)
     write_mms_message_for_vm(html_target)
 
 def process_call_from_html_file(html_target, call_type):
@@ -573,8 +575,8 @@ def bs4_append_call_elt(parent_elt, telephone_number, duration, timestamp, prese
     # readable_date - Optional field that has the date in a human readable format.
     call_elt['readable_date'] = readable_date    
     # call_type - 1 = Incoming, 2 = Outgoing, 3 = Missed, 4 = Voicemail, 5 = Rejected, 6 = Refused List.
-    call_elt['call_type'] = call_type    
-    
+    call_elt['type'] = call_type    
+    #call_elt['post_dial_digits'] = ''
     # subscription_id - Optional field that has the id of the phone subscription (SIM). On some phones these are values like 0, 1, 2  etc. based on how the phone assigns the index to the sim being used while others have the full SIM ID.
     # contact_name - Optional field that has the name of the contact.
     
