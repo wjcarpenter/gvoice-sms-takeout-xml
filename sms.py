@@ -15,7 +15,7 @@ import json
 import isodate
 import argparse
 
-__updated__ = "2023-11-12 11:20"
+__updated__ = "2023-11-12 12:18"
 
 # SMS Backup and Restore likes to notice filename that start with "sms-"
 # Save it to the great-grandparent directory because it can otherwise be hard to find amongst
@@ -660,7 +660,7 @@ def get_message_text(message_elt):
     text_elt = message_elt.find('q')
     if not text_elt:
         return None
-    return BeautifulSoup(text_elt.text, 'html.parser').prettify().strip()
+    return text_elt.text
 
 def get_mms_participant_phone_numbers(html_target, participants_elt):
     participants = []
