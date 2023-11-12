@@ -126,6 +126,7 @@ usage: sms.py [-h] [-s SMS_BACKUP_FILENAME] [-v VM_BACKUP_FILENAME]
               [-q]
 
 Convert Google Takeout HTML files to SMS Backup and Restore XML files.
+(Version 2023-11-11 10:57)
 
 options:
   -h, --help            show this help message and exit
@@ -153,6 +154,16 @@ from within Takeout/Voice/Calls/. The contacts file is optional. Output files
 should be named "sms-SOMETHING.xml" or "calls-SOMETHING.xml". See the README at
 https://github.com/wjcarpenter/gvoice-sms-takeout-xml for more information.
 ```
+When the script is printing a message for you and mentioning a file,
+it gives the absolute path to the file.
+That makes it a little more convenient if you want to go have a look at the file.
+On the other hand, when the script is mentioning a file in an XML comment in an output file,
+it might print an absolute or relative path,
+depending on the value you supply (or the default) for the `directory` argument.
+If you don't know why you'd care about the distinction,
+then you probably don't care.
+Relative paths in the output files are very slightly more privacy-preserving
+(but only slightly).
 
 ### Missing contacts
 In the Google Takeout data, 

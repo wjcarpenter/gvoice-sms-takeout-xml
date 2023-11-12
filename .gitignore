@@ -1,0 +1,8 @@
+test_data/calls-gvoice-all.xml
+test_data/calls-gvoice-all.xml.BAK
+test_data/sms-gvoice-all.xml
+test_data/sms-gvoice-all.xml.BAK
+test_data/sms-vm-gvoice-all.xml
+test_data/sms-vm-gvoice-all.xml.BAK
+
+*~
