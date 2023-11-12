@@ -15,7 +15,7 @@ import json
 import isodate
 import argparse
 
-__updated__ = "2023-11-12 09:35"
+__updated__ = "2023-11-12 11:20"
 
 # SMS Backup and Restore likes to notice filename that start with "sms-"
 # Save it to the great-grandparent directory because it can otherwise be hard to find amongst
@@ -346,7 +346,7 @@ def write_mms_message_for_vm(html_target):
     vm_from = (sender_name if sender_name else sender if sender else "Unknown")
     transcript = get_vm_transcript(body_elt)
     if transcript:
-        the_text = "Voicemail/Recording from: " + vm_from + "\nTranscript: " + transcript
+        the_text = "Voicemail/Recording from: " + vm_from + ";\nTranscript: " + transcript
     else:
         the_text = "Voicemail/Recording from: " + vm_from        
     attachment_elts = get_attachment_elts(body_elt)
@@ -437,13 +437,13 @@ def bs4_append_mms_elt_with_parts(parent_elt, html_target, attachment_elts, the_
         for sequence_number, attachment_elt in enumerate(attachment_elts):
             if attachment_elt.name == 'img':
                 attachment_file_ref = attachment_elt['src']
-                bs4_append_part_elt(parent_elt, ATTACHMENT_TYPE_IMAGE, sequence_number, html_target, attachment_file_ref)
+                bs4_append_part_elt(parts_elt, ATTACHMENT_TYPE_IMAGE, sequence_number, html_target, attachment_file_ref)
             elif attachment_elt.name == 'audio':
                 attachment_file_ref = attachment_elt.a['href']
-                bs4_append_part_elt(parent_elt, ATTACHMENT_TYPE_AUDIO, sequence_number, html_target, attachment_file_ref)
+                bs4_append_part_elt(parts_elt, ATTACHMENT_TYPE_AUDIO, sequence_number, html_target, attachment_file_ref)
             elif attachment_elt.name == 'a' and 'vcard' in attachment_elt['class']:
                 attachment_file_ref = attachment_elt['href']
-                bs4_append_part_elt(parent_elt, ATTACHMENT_TYPE_VCARD, sequence_number, html_target, attachment_file_ref)
+                bs4_append_part_elt(parts_elt, ATTACHMENT_TYPE_VCARD, sequence_number, html_target, attachment_file_ref)
             else:
                 print(f'>> Unrecognized MMS attachment in HTML file (skipped):\n>> {attachment_elt}')
                 print(f'>>     due to File: "{get_abs_path(html_target)}"')
