@@ -109,7 +109,7 @@ The script produces three separate output files.
 - an "sms vm" file containing MMS messages for voicemails
 (The voicemail recording is included as an attachment.
 If there is a transcript, it is included as a text part of the MMS message.
-A voicemail also creates a record in the "calls" file, without the recording or transcript.)
+A voicemail also creates a missed call record in the "calls" file, without the recording or transcript.)
 
 Why is there a separate file for voicemail MMS messages?
 It's done that way in case you don't want to include those with the other SMS and MMS messages when you do the restore operation.
