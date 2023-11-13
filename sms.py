@@ -15,7 +15,7 @@ import json
 import isodate
 import argparse
 
-__updated__ = "2023-11-12 13:34"
+__updated__ = "2023-11-12 17:55"
 
 # SMS Backup and Restore likes to notice filename that start with "sms-"
 # Save it to the great-grandparent directory because it can otherwise be hard to find amongst
@@ -23,9 +23,9 @@ __updated__ = "2023-11-12 13:34"
 # "Takeout" as a subdirectory, and you should run this script from the
 # Takeout/Voice/Calls subdirectory.
 
-sms_backup_filename  = "../../../sms-gvoice-all.xml"
-call_backup_filename = "../../../calls-gvoice-all.xml"
-vm_backup_filename   = "../../../sms-vm-gvoice-all.xml"
+sms_backup_filename  = os.path.join('..', '..', '..', 'sms-gvoice-all.xml')
+call_backup_filename = os.path.join('..', '..', '..', 'calls-gvoice-all.xml')
+vm_backup_filename   = os.path.join('..', '..', '..', 'sms-vm-gvoice-all.xml')
 sms_backup_file  = None
 call_backup_file = None
 vm_backup_file   = None
@@ -44,7 +44,7 @@ vm_backup_file   = None
 # file until you have resolved all of those contacts_keyed_by_name warnings.
 
 # This file is *optional* unless you get an error message asking you to add entries to it.
-contacts_filename = "../../../contacts.json"
+contacts_filename = os.path.join('..', '..', '..', 'contacts.json')
 # The contacts JSON file, if present, is read into this dictionary, but discovered entries are also read into it.
 contacts_keyed_by_name = dict()
 # You can probably guess what this is based on the name. It's the inverse of the one just above.
