@@ -36,10 +36,7 @@ For this test data, the Google Voice account belongs to user Maria S Curie.
 |F Scott Fitzgerald|+17323215555|
 |George H Ruth Jr|+17323216666|
 |Hans Christian Andersen|+17323217777|
-|Isaac Newton|+17323218888|
-|Jane Austen|+17323211010|
 |Maria S Curie|+17323210011|
-|Rosalind E Franklin|+17323211313|
 |Søren Aabye Kierkegaard|+17323211414|
 |William Shakespeare|+17323211515|
 |Wilma Glodean Rudolph|+17323211717|
