@@ -15,7 +15,7 @@ import json
 import isodate
 import argparse
 
-__updated__ = "2023-11-12 17:55"
+__updated__ = "2023-11-13 15:22"
 
 # SMS Backup and Restore likes to notice filename that start with "sms-"
 # Save it to the great-grandparent directory because it can otherwise be hard to find amongst
@@ -162,7 +162,7 @@ def process_one_file(is_first_pass, html_target, come_back_later):
     global html_elt
     __, html_basename = html_target
     if not html_basename.endswith('.html'): return
-    
+
     get_name_or_number_from_filename(html_basename)
     with open(get_rel_path(html_target), 'r', encoding="utf-8") as html_file:
         html_elt = BeautifulSoup(html_file, 'html.parser')
@@ -710,9 +710,12 @@ def get_time_unix(message):
     if not time_elt:
         time_elt = message.find(class_='published')
     iso_time = time_elt['title']
-    time_obj = dateutil.parser.isoparse(iso_time);
-    mstime = timegm(time_obj.timetuple()) * 1000 + time_obj.microsecond / 1000
-    return int(mstime)
+    parsed_iso_time = dateutil.parser.isoparse(iso_time);
+    utc_offset_millis = parsed_iso_time.utcoffset().total_seconds() * 1000
+    # timegm() doesn't take the TZ into account, so we have to adjust it manually
+    timegm_millis = timegm(parsed_iso_time.timetuple()) * 1000
+    unix_epoch_time_millis = timegm_millis - utc_offset_millis
+    return int(unix_epoch_time_millis)
 
 def get_aka_path(path):
     if os.path.isabs(path):

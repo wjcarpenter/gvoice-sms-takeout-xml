@@ -100,6 +100,11 @@ For example, `pip install bs4`.
 - If the script sees problems in the information, it will report them to you.
 See the information below about missing contacts.
 
+### Running a test
+If you would like to try this with some test data to get comfortable with things,
+head down to the `test_data` subdirectory.
+There are instructions there for how to use that test data with your own phone.
+
 ### Output files
 The script produces three separate output files.
 

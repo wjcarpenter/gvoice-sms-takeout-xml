@@ -12,6 +12,10 @@ The data came mostly from actual Google Takeout files,
 but the contact names and numbers have been faked for privacy.
 Likewise, the attachment files have been munged, 
 which also makes them a lot smaller and easier to inspect in the output files.
+All images and sound files have had the same replacement,
+so don't let that bother you.
+The important thing for the test data is that the attachments show up where expected;
+their contents is unimportant.
 
 ## Archive browser
 The file <archive_browser.html> is a stripped down copy of an actual file from Google Takeout
@@ -45,6 +49,36 @@ For this test data, the Google Voice account belongs to user Maria S Curie.
 |Trish Three|+12125550003|
 |Mary Four|+12125550004|
 |Laura Five|+12125550005|
+
+## Testing SMS Backup and Restore
+Before committing your own precious message and call history to the `restore` process,
+you might like to make a practice run with this test data.
+How can you do that?
+
+- In the Google Contacts for the account you use with your phone,
+add the names and phone numbers from the above list.
+You might like to add some distinctive label to those entries to make them easy find or delete later.
+- Run the `sms.py` script against this test data.
+- In the output files,
+replace Curie's number, `+17323210011`, with your own number.
+If you are on a Unix-like system, 
+you can do that with `sed` like so:
+`sed -i 's/17323210011/19991111234/g' *.xml`
+- Use those modified output files to do a `restore` to your phone with SMS Backup and Restore.
+- In your phone's dialer app, 
+you should be able to see call history for several of those fake contacts.
+- In your phone's text messaging app,
+you should be able to see conversation history for several of those fake contacts.
+That includes a few messages with voicemail recordings attached
+and a group conversation with you and 5 other participants.
+Some of the messages include attached images or vCard files.
+- You might like to `restore` again with the same files to see that SMS Backup and Restore detects the duplicates.
+- When you are done looking around,
+your dialer and text messaging apps should let you delete the history for all the restored items.
+Your contacts app should let you delete the contacts themselves.
+
+After you have done all of the above, your phone's contents should be back where you started,
+with only real calls and conversations and none of the fake ones.
 
 ## Console output
 Your paths will be different, but my output looks like this:
