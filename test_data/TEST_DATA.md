@@ -18,7 +18,7 @@ The important thing for the test data is that the attachments show up where expe
 their contents is unimportant.
 
 ## Archive browser
-The file <archive_browser.html> is a stripped down copy of an actual file from Google Takeout
+The file <Takeout/archive_browser.html> is a stripped down copy of an actual file from Google Takeout
 with line items added for the test data.
 It's just here for convenience of browsing the test data files.
 
