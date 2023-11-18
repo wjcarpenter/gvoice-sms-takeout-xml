@@ -1,0 +1,11 @@
+appdirs==1.4.4
+beautifulsoup4==4.12.2
+bs4==0.0.1
+dateutils==0.6.12
+fs==2.4.16
+isodate==0.6.1
+phonenumbers==8.13.25
+python-dateutil==2.8.2
+pytz==2023.3.post1
+six==1.16.0
+soupsieve==2.5

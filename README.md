@@ -84,18 +84,21 @@ That might be the best way to go if you are not sure you are really seeing a new
 ## How to use this script
 You want to use Python 3 to run this, 
 and you may have to `pip install` some of the imported modules if you don't happen to already have them.
-If you don't know what any of that means, 
+Even better would be to set up a python virtual environment,
+and install the dependencies with `pip install -r requirements.txt`.
+If you don't know what some of that means, 
 contact the nearest smart alecky kid and get them to help you.
 
-- Save sms.py in some convenient location. Let's call that location `/some/bin/sms.py`. It is a python script that requires Python 3.
-- Use Google Takeout to download Google Voice messages. That will give you a file named `takeout-`_something-something_`.zip`.
+- Save sms.py in some convenient location. Let's call that location `/some/bin/sms.py`. 
+It is a python script that requires Python 3.
+- Use Google Takeout to download Google Voice messages. 
+That will give you a file named `takeout-`_something-something_`.zip`.
 - Unpack that ZIP file in some convenient location. Let's call that location `/someplace/t/`. 
 The Google Voice files will be in a directory `Takeout/Voice/Calls/`, aka `/someplace/t/Takeout/Voice/Calls/`.
 - In a terminal window, go to directory `/someplace/t/Takeout/Voice/Calls/`.
 - Run the python script, for example, `python /some/bin/sms.py` or `python3 /some/bin/sms.py`.
 - If you get python errors, it is most likely because you are missing some of the imported modules. 
 Use `pip` to install them until python stops complaining. 
-For example, `pip install bs4`.
 - When the script starts running correctly, it will announce the locations of inputs and outputs and other helpful information.
 - If the script sees problems in the information, it will report them to you.
 See the information below about missing contacts.
