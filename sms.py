@@ -14,41 +14,35 @@ from io import open # adds emoji support
 import json
 import isodate
 import argparse
+from operator import itemgetter
+import pprint
 
-__updated__ = "2023-11-13 15:22"
+__updated__ = "2023-11-30 12:48"
 
-# SMS Backup and Restore likes to notice filename that start with "sms-"
-# Save it to the great-grandparent directory because it can otherwise be hard to find amongst
-# the zillion HTML files. The great-grandparent directory is the one that contains
-# "Takeout" as a subdirectory, and you should run this script from the
-# Takeout/Voice/Calls subdirectory.
-
-sms_backup_filename  = os.path.join('..', '..', '..', 'sms-gvoice-all.xml')
-call_backup_filename = os.path.join('..', '..', '..', 'calls-gvoice-all.xml')
-vm_backup_filename   = os.path.join('..', '..', '..', 'sms-vm-gvoice-all.xml')
 sms_backup_file  = None
 call_backup_file = None
 vm_backup_file   = None
+chat_backup_file = None
+takeout_voice_directory = os.path.join('Voice', 'Calls')
+takeout_chat_directory = os.path.join('Google Chat', 'Groups')
 
-# We sometimes see isolated messages from ourselves to someone, and the Takeout format
-# only identifies them by contact name instead of phone number. In such cases, we
-# consult this optional JSON file to map  the name to a phone number (which should
-# include the "+" and country code and no other punctuation). Must be valid JSON, eg:
-# {
-#   "Me": "+441234567890",
-#   "Joe Blow": "+18885551234",
-#   "Susie Glow": "+18885554321"
-# }
-# In cases where there is no JSON entry when needed, a warning is printed. Update
-# the JSON file and re-run this script. Don't try to restore with the output
-# file until you have resolved all of those contacts_keyed_by_name warnings.
+# contacts dict by name
+#   each value is a list
+#     each item in the list is a timestamped_number: (phone number, timestamp)
+#     for contacts read from the file, the timestamp is artificially sometime in the future
+#       if the read contact already has a list of numbers, they are assumed to be in ascending order of preference
+#     for discovered contacts, it's the timestamp of the message where we disovered the contact
+#       if we discover the same contact again, we update the timestamp if it's later then the one we know
+#     the head of the list is kept pointing at the timestamped_number with the latest timestamp
+#
+# phone number replacement policies:
+#   as-is: take whatever number is in the file
+#   latest: swap with the chronologically latest number we know
+#   selective: swap as configured
+#   acceptable: listed numbers as-is, all others swapped with preferred
 
-# This file is *optional* unless you get an error message asking you to add entries to it.
-contacts_filename = os.path.join('..', '..', '..', 'contacts.json')
-# The contacts JSON file, if present, is read into this dictionary, but discovered entries are also read into it.
-contacts_keyed_by_name = dict()
-# You can probably guess what this is based on the name. It's the inverse of the one just above.
-contacts_keyed_by_number = dict()
+
+contacts_oracle = None
 
 # this is for some internal bookkeeping; you don't need to do anything with it.
 missing_contacts = set()
@@ -56,13 +50,13 @@ conflicting_contacts = dict()
 
 # some global counters for a stats summary at the end
 counters = {
-    'number_of_sms_output':    0, 
-    'number_of_calls_output':  0, 
-    "number_of_vms_output":    0,
-    "contacts_read_from_file": 0,
-    "conflict_warnings":       0,
-    "todo_errors":             0,
-    "first_pass_defers":       0
+    'number_of_voice_sms_output':    0, 
+    'number_of_chat_sms_output':     0, 
+    'number_of_calls_output':        0, 
+    "number_of_vms_output":          0,
+    "conflict_warnings":             0,
+    "todo_errors":                   0,
+    "number_of_discovered_contacts": 0,
     }
 
 # I really don't like globals, but there are just too many things to tote around in all these function calls.
@@ -71,94 +65,145 @@ contact_name_from_filename = None
 phone_number_from_html_title = None
 contact_name_from_html_title = None
 html_elt = None
-verbosity = 0
-VERBOSE = 0
-QUIET = -1
-VERY_QUIET = -2
+
+# This number is used a couple of places where we can't figure out the real number.
+# If you want to manually fix things up, you should be able to easily search for it in
+# either the inputs or the outputs.
+BOGUS_NUMBER = "0000000000"
+
 ATTACHMENT_TYPE_IMAGE = "image"
 ATTACHMENT_TYPE_AUDIO = "audio"
 ATTACHMENT_TYPE_VCARD = "vcard"
 
+POLICY_ASIS = "asis"
+POLICY_NEWEST = "newest"
+POLICY_CONFIGURED = "configured"
 # My convention is to use a relative filename when emitting into the XML
 # and an absolute filename when printing a message for the person running the script.
 
 def main():
-    global sms_backup_file, vm_backup_file, call_backup_file
-    global sms_backup_filename, vm_backup_filename, call_backup_filename, contacts_filename
-    global html_elt, verbosity
+    global sms_backup_file, vm_backup_file, call_backup_file, chat_backup_file
+    global contacts_oracle
+    global html_elt
     
-    
-    description = f'Convert Google Takeout HTML files to SMS Backup and Restore XML files. (Version {__updated__})'
-    epilog = ('All command line arguments are optional and have reasonable defaults when run from within "Takeout/Voice/Calls/". '
+    # This file is *optional* unless you get an error message asking you to add entries to it.
+    contacts_filename = os.path.join('..', 'contacts.json')
+    # SMS Backup and Restore likes to notice filenames that start with "sms-" or "calls-".
+    # Save them to the parent directory so they are not lost if the Tajkeout file is
+    # redone. The parent directory is the one that contains "Takeout". The script
+    # expects to be run from within the "Takeout" directory by default.
+    sms_backup_filename  = os.path.join('..', 'sms-gvoice.xml')
+    call_backup_filename = os.path.join('..', 'calls-gvoice.xml')
+    vm_backup_filename   = os.path.join('..', 'sms-vm-gvoice.xml')
+    chat_backup_filename = os.path.join('..', 'sms-chat.xml')
+    number_policy = POLICY_ASIS
+    dump_data = False
+
+    description = f'Convert Google Takeout HTML and Google Chat JSON files to SMS Backup and Restore XML files. (Version {__updated__})'
+    epilog = ('All command line arguments are optional and have reasonable defaults when the script is run from within "Takeout/". '
         'The contacts file is optional. '
         'Output files should be named "sms-SOMETHING.xml" or "calls-SOMETHING.xml". '
         "See the README at https://github.com/wjcarpenter/gvoice-sms-takeout-xml for more information.")
     argparser = argparse.ArgumentParser(description=description, epilog=epilog)
+
+    argparser.add_argument('-d', '--voice_directory',            
+                           default="Voice/Calls",                  
+                           help=f"The voice_directory containing the HTML files from Google Voice. Defaults to \"{takeout_voice_directory}\".")
+    argparser.add_argument('-e', '--chat_directory',            
+                           default="Google Chat/Groups",                  
+                           help=f"The chat_directory containing the JSON files from Google Chat. Defaults to \"{takeout_chat_directory}\".")
+
     argparser.add_argument('-s', '--sms_backup_filename',  
                            default=sms_backup_filename,  
-                           help=f"File to receive SMS/MMS messages. Defaults to {sms_backup_filename}")
+                           help=f"File to receive SMS/MMS messages from Google Voice. Defaults to \"{sms_backup_filename}\".")
     argparser.add_argument('-v', '--vm_backup_filename',   
                            default=vm_backup_filename,   
-                           help=f"File to receive voicemail MMS messages. Defaults to {vm_backup_filename}")
+                           help=f"File to receive voicemail MMS messages from Google Voice. Defaults to \"{vm_backup_filename}\".")
     argparser.add_argument('-c', '--call_backup_filename', 
                            default=call_backup_filename, 
-                           help=f"File to receive call history records. Defaults to {call_backup_filename}")
+                           help=f"File to receive call history records from Google Voice. Defaults to \"{call_backup_filename}\".")
+    argparser.add_argument('-t', '--chat_backup_filename', 
+                           default=chat_backup_filename, 
+                           help=f"File to receive SMS/MMS messages from Google Chat. Defaults to \"{chat_backup_filename}\".")
+
     argparser.add_argument('-j', '--contacts_filename',    
                            default=contacts_filename,    
-                           help=f'JSON formatted file of contact name/number pairs. Defaults to {contacts_filename}')
-    argparser.add_argument('-d', '--directory',            
-                           default=".",                  
-                           help=f'The directory containing the HTML files, typically the "Takeout/Voice/Calls/" subdirectory. Defaults to the current directory.')
-    argparser.add_argument('-q', '--quiet',                
-                           default=0,                    
-                           help="Be a little quieter. Give this flag twice to be very quiet.", 
-                           action='count')
+                           help=f"JSON formatted file of definitive contact name/number pairs. Defaults to \"{contacts_filename}\".")
+    argparser.add_argument('-p', '--number_policy',    
+                           default=number_policy,
+                           choices=(POLICY_ASIS, POLICY_CONFIGURED, POLICY_NEWEST),    
+                           help=f"Policy for choosing the \"best\" number for a contact. Defaults to \"{number_policy}\".")
+    argparser.add_argument('-z', '--dump_data',
+                           action='store_true',
+                           help=f"Dump some internal tables at the end of the run, which might help with sorting out some thing.")
+
     args = vars(argparser.parse_args())
 
     sms_backup_filename = args['sms_backup_filename']
     vm_backup_filename = args['vm_backup_filename']
     call_backup_filename = args['call_backup_filename']
-    directory = args['directory']
+    voice_directory = args['voice_directory']
+    chat_directory = args['chat_directory']
     contacts_filename = args['contacts_filename']
-    # I wanted to let users choose the level of quietness, but I found it
-    # counterintuitive to use that value in the code, so I simply negate it
-    # and call it verbosity. Such is the mind of a programmer.
-    verbosity = -args['quiet']
+    number_policy = args['number_policy']
+    dump_data = args['dump_data']
+
+    contacts_oracle = ContactsOracle(contacts_filename, number_policy)    
+    prep_output_files(sms_backup_filename, vm_backup_filename, call_backup_filename, chat_backup_filename)
     
-    prep_output_files()
-    if verbosity >= VERBOSE:
-        print('>> Reading *.html files under', get_aka_path(directory))
-    come_back_later = []
-    
-    with (open(sms_backup_filename, 'w') as sms_backup_file, 
-          open(vm_backup_filename, 'w') as vm_backup_file, 
-          open(call_backup_filename, 'w') as call_backup_file):
+    print('>> 1st pass reading *.html files under', get_aka_path(voice_directory))
+    # We make two passes over the HTML files. The first pass is merely to gather contact info so that
+    # we have the complete picture before starting the second ("real") pass. That's so that we can
+    # correctly apply phone number replacement policies for all of the HTML files. It's true that
+    # some of the policies do not require this complete picture, and we could greatly reduce the files
+    # processed in the second pass (maybe even not needing a second pass), but that clutters up the 
+    # logic quite a bit. Since this is a one-time migration, efficiency is not that critical and we
+    # accept the inefficiency for some number_policy cases.
+    for subdirectory, __, files in os.walk(voice_directory):
+        for html_basename in files:
+            html_target = (subdirectory, html_basename)
+            process_one_voice_file(True, html_target)
+
+    with (open(sms_backup_filename,  'w') as sms_backup_file, 
+          open(vm_backup_filename,   'w') as vm_backup_file, 
+          open(call_backup_filename, 'w') as call_backup_file,
+          open(chat_backup_filename, 'w') as chat_backup_file):
         
         write_dummy_headers()
-        for subdirectory, dirs, files in os.walk(directory):
-            for html_basename in files:
-                html_target = (subdirectory, html_basename)
-                process_one_file(True, html_target, come_back_later)
-
-        me_contact = contacts_keyed_by_name.get('Me', None)
-        if not me_contact and come_back_later:
+        
+        me_contact = contacts_oracle.get_number_by_name('Me', None)
+        if not me_contact:
             print()
             print("Unfortunately, we can't figure out your own phone number.")
-            print(os.path.abspath(contacts_filename) + ': TODO: add a +phonenumber for contact: "Me": "+",')
+            print('TODO: Missing +phonenumber for contact: "Me": "+",')
             counters['todo_errors'] += 1
+            missing_contacts.add('Me')
         else:
-            if verbosity >= VERBOSE:
-                print(">> Your 'Me' phone number is", me_contact)
-            for html_target in come_back_later:
-                process_one_file(False, html_target, come_back_later)
+            print(">> Your 'Me' phone number is", me_contact)
+        print('>> 2nd pass reading *.html files under', get_aka_path(voice_directory))
+        # second pass over GV files
+        for subdirectory, __, files in os.walk(voice_directory):
+            for html_basename in files:
+                html_target = (subdirectory, html_basename)
+                process_one_voice_file(False, html_target)
+
+        print('>> Reading chat files under', get_aka_path(voice_directory))
+        for subdirectory, __, __ in os.walk(chat_directory):
+            process_one_chat_file(subdirectory)
 
         write_trailers()
     
     # we have to reopen the files with a different mode for this
-    write_real_headers()
-    print_counters()
+    write_real_headers(sms_backup_filename, vm_backup_filename, call_backup_filename, chat_backup_filename)
+    print_counters(contacts_filename, sms_backup_filename, vm_backup_filename, call_backup_filename, chat_backup_filename)
+    if dump_data:
+        contacts_oracle.dump()
 
-def process_one_file(is_first_pass, html_target, come_back_later):
+def process_one_chat_file(subdirectory):
+    participants = process_chat_group_info(subdirectory)
+    process_chat_messages(subdirectory, participants)
+
+def process_one_voice_file(is_first_pass, html_target):
     global html_elt
     __, html_basename = html_target
     if not html_basename.endswith('.html'): return
@@ -168,37 +213,22 @@ def process_one_file(is_first_pass, html_target, come_back_later):
         html_elt = BeautifulSoup(html_file, 'html.parser')
     get_name_or_number_from_title()
 
+    if is_first_pass:
+        scan_vcards_for_contacts(html_target, html_elt.body)
+        return
+
+    # Need to be firm about mapping contact names to numbers! The contact_name_to_number() function will complain.
+    if contact_name_from_html_title and not contact_name_to_number(html_target, contact_name_from_html_title):
+        return
+    if contact_name_from_filename and not contact_name_to_number(html_target, contact_name_from_filename):
+        return
+
     tags_div = html_elt.body.find(class_='tags')
     tag_elts = tags_div.find_all(rel='tag')
     tag_values = set()
     for tag_elt in tag_elts:
         tag_value = tag_elt.get_text()
         tag_values.add(tag_value)
-
-    scan_vcards_for_contacts(html_target, html_elt.body)
-    need_title_contact = contact_name_from_html_title and not contacts_keyed_by_name.get(contact_name_from_html_title, None)
-    need_filename_contact = contact_name_from_filename and not contacts_keyed_by_name.get(contact_name_from_filename, None)
-    me_contact = contacts_keyed_by_name.get('Me', None)
-    if is_first_pass and (not me_contact or need_title_contact or need_filename_contact):
-        if "Text" in tag_values or "Voicemail" in tag_values or "Recorded" in tag_values:
-            # Can't do anything rational for SMS/MMS if we don't know our own number.
-            # We _might_ be able to get along without the phone numbers for the contacts
-            # named in the filename or the HTML title, but not always. Save them for
-            # the second pass just in case.
-            if verbosity >= QUIET:
-                print(">> Deferring:", get_abs_path(html_target))
-            counters['first_pass_defers'] += 1
-            come_back_later.append(html_target)
-            return
-
-    if not is_first_pass:
-        if verbosity >= QUIET:
-            print(">> 2nd  pass:", get_abs_path(html_target))
-        # Need to be firmer about mapping contact names to numbers! The contact_name_to_number() function will complain.
-        if contact_name_from_html_title and not contact_name_to_number(html_target, contact_name_from_html_title):
-            return
-        if contact_name_from_filename and not contact_name_to_number(html_target, contact_name_from_filename):
-            return
 
     if   "Text"      in tag_values:  process_Text_from_html_file(html_target)
     elif "Received"  in tag_values:  process_call_from_html_file(html_target, 1)
@@ -255,21 +285,18 @@ def process_call_from_html_file(html_target, call_type):
 
 def contact_name_to_number(html_target, contact_name):
     if not contact_name:
-        print("TODO: We can't figure out the contact name or number from an HTML file. Using '0'.")
+        print(f"TODO: We can't figure out the contact name or number from an HTML file. Using '{BOGUS_NUMBER}'.")
         print(f'      due to File: "{get_abs_path(html_target)}"')
-        return "0"
-    contact_number = contacts_keyed_by_name.get(contact_name, None)
+        return BOGUS_NUMBER
+    contact_number = contacts_oracle.get_number_by_name(contact_name, None)
     if not contact_number and not contact_name in missing_contacts:
         print()
-        print(f'TODO: {os.path.abspath(contacts_filename)}: add a +phonenumber for contact: "{contact_name}": "+",')
+        print(f'TODO: Missing or disallowed +phonenumber for contact: "{contact_name}": "+",')
         print(f'      due to File: "{get_abs_path(html_target)}"')
         counters['todo_errors'] += 1
         # we add this fake entry to a dictionary so we don't keep complaining about the same thing
         missing_contacts.add(contact_name)
     return contact_number
-
-def contact_number_to_name(contact_number):
-    return contacts_keyed_by_number.get(contact_number, None)
 
 def get_sender_number_from_title_or_filename(html_target):
     if phone_number_from_html_title:
@@ -323,7 +350,7 @@ def write_sms_messages(html_target, message_elts):
             bs4_append_mms_elt_with_parts(parent_elt, html_target, attachment_elts, the_text, other_party_number, sent_by_me, timestamp, msgbox_type, [other_party_number])
         sms_backup_file.write(parent_elt.prettify())
         sms_backup_file.write('\n')
-        counters['number_of_sms_output'] += 1
+        counters['number_of_voice_sms_output'] += 1
 
 def write_mms_message_for_vm(html_target):
     # We want to end up with an MMS messages, just like any other, but the HTML input file is 
@@ -334,14 +361,14 @@ def write_mms_message_for_vm(html_target):
     contributor_elt = body_elt.find(class_='contributor')
     this_number, this_name = get_number_and_name_from_tel_elt_parent(contributor_elt)
     if this_number:
-        sender = this_number
+        sender = contacts_oracle.get_best_number(this_number)
         sender_name = this_name
     if not sender:
         sender = get_sender_number_from_title_or_filename(html_target)
     if not sender_name:
-        sender_name = contact_number_to_name(sender)
+        sender_name = contacts_oracle.get_name_by_number(sender)
 
-    participants = [sender] if sender else ["0"]
+    participants = [sender] if sender else [BOGUS_NUMBER]
     timestamp = get_time_unix(body_elt)
     vm_from = (sender_name if sender_name else sender if sender else "Unknown")
     transcript = get_vm_transcript(body_elt)
@@ -377,7 +404,7 @@ def write_mms_messages(html_target, participants_elt, message_elts):
         bs4_append_mms_elt_with_parts(parent_elt, html_target, attachment_elts, the_text, sender, sent_by_me, timestamp, None, participants)
         sms_backup_file.write(parent_elt.prettify())
         sms_backup_file.write('\n')
-        counters['number_of_sms_output'] += 1
+        counters['number_of_voice_sms_output'] += 1
 
 def get_attachment_elts(message_elt):
     attachment_elts = []
@@ -548,7 +575,7 @@ def bs4_append_part_elt(parent_elt, attachment_type, sequence_number, html_targe
 def bs4_append_addrs_elt(elt_parent, participants, other_party_number, sent_by_me):
     addrs_elt = html_elt.new_tag('addrs')
     elt_parent.append(addrs_elt)
-    me_contact = contacts_keyed_by_name.get("Me")
+    me_contact = contacts_oracle.get_number_by_name('Me', None)
     for participant in participants + [me_contact]:
         if sent_by_me and participant == me_contact:
             participant_is_sender = True
@@ -676,7 +703,17 @@ def get_mms_participant_phone_numbers(html_target, participants_elt):
         raw_number = tel_elt['href'][4:]
         if not raw_number:
             # I don't know if this can ever happen
-            raw_number = contact_name_to_number(get_sender_number_from_title_or_filename(html_target))
+            raw_number = contact_name_to_number(get_sender_name_from_title_or_filename(html_target))
+        phone_number = contacts_oracle.get_best_number(raw_number)
+        if not phone_number:
+            contact_name = contacts_oracle.get_name_by_number(raw_number)
+            if not contact_name:
+                contact_name = get_sender_name_from_title_or_filename(html_target)
+            print()
+            print(f'TODO: Missing or disallowed +phonenumber for contact: "{contact_name}": "{raw_number}",')
+            print(f'      due to File: "{get_abs_path(html_target)}"')
+            counters['todo_errors'] += 1
+            phone_number = BOGUS_NUMBER
         phone_number = format_number(html_target, raw_number)
         participants.append(format_number(html_target, phone_number))
 
@@ -693,17 +730,21 @@ def format_number(html_target, raw_number):
         phone_number = phonenumbers.parse(raw_number, None)
     except phonenumbers.phonenumberutil.NumberParseException:
         # I also saw this on a 10-year-old "Placed" call. Probably a data glitch.
-        if verbosity >= QUIET:
-            print()
-            if not raw_number:
-                print(f"TODO: Missing contact phone number in HTML file. Using '0'.")
-                raw_number = '0'
-            else:
-                print(f"TODO: Possibly malformed contact phone number '{raw_number}' in HTML file. Using it anyhow.")
-            print(f'      due to File: "{get_abs_path(html_target)}"')
+        print()
+        if raw_number:
+            print(f"TODO: Possibly malformed contact phone number '{raw_number}' in HTML file. Using it anyhow.")
+        else:
+            print(f"TODO: Missing contact phone number in HTML file. Using '{BOGUS_NUMBER}'.")
+        print(f'      due to File: "{get_abs_path(html_target)}"')
         counters['todo_errors'] += 1
         return raw_number
     return phonenumbers.format_number(phone_number, phonenumbers.PhoneNumberFormat.E164)
+
+def is_phone_number(value):
+    match_phone_number = re.match(r'(\+?[0-9]+)', value)
+    if match_phone_number:
+        return match_phone_number.group(1)
+    return None 
 
 def get_time_unix(message):
     time_elt = message.find(class_='dt')
@@ -731,132 +772,144 @@ def get_rel_path(target):
     subdirectory, basename = target
     return os.path.normpath(os.path.join(subdirectory, basename))
 
-xml_header = u"<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>\n"
+XML_HEADER = "<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>\n"
 def write_dummy_headers():
     # The extra padding on the "count" lines are so that we can write the real count later
     # without worrying about not having enough space. The extra whitespace at that
     # place in the XML file is not significant.
-    sms_backup_file.write(xml_header)
-    sms_backup_file.write(u'<smses count="0">                                           \n')
-    sms_backup_file.write(u"<!--Converted from GV Takeout data -->\n")
+    sms_backup_file.write(XML_HEADER)
+    sms_backup_file.write('<smses count="0">'
+                           '                                          \n')
+    sms_backup_file.write("<!--Converted from Google Voice Takeout data -->\n")
 
     ################
-    vm_backup_file.write(xml_header)
-    vm_backup_file.write(u'<smses count="0">                                           \n')
-    vm_backup_file.write(u"<!--Converted from GV Takeout data -->\n")
+    vm_backup_file.write(XML_HEADER)
+    vm_backup_file.write('<smses count="0">'
+                           '                                          \n')
+    vm_backup_file.write("<!--Converted from Google Voice Takeout data -->\n")
 
     ################
-    call_backup_file.write(xml_header)
-    call_backup_file.write(u'<calls count="0">                                           \n')
-    call_backup_file.write(u"<!--Converted from GV Takeout data -->\n")
+    call_backup_file.write(XML_HEADER)
+    call_backup_file.write('<calls count="0">'
+                           '                                          \n')
+    call_backup_file.write("<!--Converted from Google Voice Takeout data -->\n")
 
-def print_counters():
-    if verbosity >= QUIET:
-        print(f">> {counters['number_of_sms_output']:6} SMS/MMS records written to {sms_backup_filename}")
-        print(f">> {counters['number_of_vms_output']:6} Voicemail records written to {vm_backup_filename}")
-        print(f">> {counters['number_of_calls_output']:6} Call records written to {call_backup_filename}")
-        contacts_from_json = counters['contacts_read_from_file']
-        print(f">> {contacts_from_json:6} Contact name-and-numbers read from JSON file {contacts_filename}")
-        contacts_from_html = len(contacts_keyed_by_name) - contacts_from_json
-        print(f">> {contacts_from_html:6} Contact name-and-numbers discovered in HTML files")
-        print(f">> {counters['first_pass_defers']:6} Files deferred on first pass")
-        print(f">> {counters['conflict_warnings']:6} Conflict warnings given")
-        print(f">> {counters['todo_errors']:6} TODO errors given")
+    ################
+    chat_backup_file.write(XML_HEADER)
+    chat_backup_file.write('<smses count="0">'
+                           '                                          \n')
+    chat_backup_file.write("<!--Converted from Google Chat Takeout data -->\n")
+
+def print_counters(contacts_filename, sms_backup_filename, vm_backup_filename, call_backup_filename, chat_backup_filename):
+    pp = pprint.PrettyPrinter(indent=2, width=100)
+    print(">> Counters:")
+    print(f">> {counters['number_of_voice_sms_output']:6} SMS/MMS records from Google Voice written to {get_aka_path(sms_backup_filename)}")
+    print(f">> {counters['number_of_vms_output']:6} Voicemail records from Google Voice written to {get_aka_path(vm_backup_filename)}")
+    print(f">> {counters['number_of_calls_output']:6} Call records from Google Voice written to {get_aka_path(call_backup_filename)}")
+    print(f">> {counters['number_of_chat_sms_output']:6} SMS/MMS records from Google Chat written to {get_aka_path(chat_backup_filename)}")
+    print(f">> {counters['number_of_discovered_contacts']:6} Contacts discovered in HTML files")
+    print(f">> {counters['conflict_warnings']:6} Conflict info warnings given")
+    print(f">> {counters['todo_errors']:6} TODO errors given")
+    if counters['conflict_warnings'] > 0:
+        print(">> Recap of conflict info warnings:")
+        for name, numbers in conflicting_contacts.items():
+            if len(numbers) > 1:
+                print(f">>    {name}: {numbers}")
+    if missing_contacts:
+        print(">> Recap of missing or unresolved contacts (not including disallowed numbers):")
+        print(f">>    {missing_contacts}")
+        
+#    print("Winter", contacts_oracle.get_number_by_name("Mike Winter", None))
+#    print("Dang", contacts_oracle.get_number_by_name("Quynh Dang", None))
+#    print("None", contacts_oracle.get_number_by_name("Nobody", None))
+#    print("111111111", contacts_oracle.get_name_by_number("111111111"))
+#    print("22222222", contacts_oracle.get_name_by_number("22222222"))
+#    print("+17148123062", contacts_oracle.get_name_by_number("+17148123062"))
+#    contacts_oracle.dump()
     
-def write_real_headers():
+def write_real_headers(sms_backup_filename, vm_backup_filename, call_backup_filename, chat_backup_filename):
     print()
 
     with open(sms_backup_filename, 'r+') as backup_file:
-        backup_file.write(xml_header)
-        backup_file.write(f'<smses count={counters["number_of_sms_output"]}>\n')
+        backup_file.write(XML_HEADER)
+        backup_file.write(f'<smses count="{counters["number_of_voice_sms_output"]}">\n')
 
     ################
     with open(vm_backup_filename, 'r+') as backup_file:
-        backup_file.write(xml_header)
-        backup_file.write(f'<smses count={counters["number_of_vms_output"]}>\n')
+        backup_file.write(XML_HEADER)
+        backup_file.write(f'<smses count="{counters["number_of_vms_output"]}">\n')
 
     ################
     with open(call_backup_filename, 'r+') as backup_file:
-        backup_file.write(xml_header)
-        backup_file.write(f'<calls count={counters["number_of_calls_output"]}>\n')
+        backup_file.write(XML_HEADER)
+        backup_file.write(f'<calls count="{counters["number_of_calls_output"]}">\n')
+
+    ################
+    with open(chat_backup_filename, 'r+') as backup_file:
+        backup_file.write(XML_HEADER)
+        backup_file.write(f'<smses count="{counters["number_of_chat_sms_output"]}">\n')
+
 
 def write_trailers():
-    sms_backup_file.write(u'</smses>\n')
-    vm_backup_file.write(u'</smses>\n')
-    call_backup_file.write(u'</calls>\n')
+    sms_backup_file.write('</smses>\n')
+    vm_backup_file.write('</smses>\n')
+    call_backup_file.write('</calls>\n')
+    chat_backup_file.write('</smses>\n')
 
-def prep_output_files():
-    global contacts_keyed_by_name
+def prep_output_files(sms_backup_filename, vm_backup_filename, call_backup_filename, chat_backup_filename):
     sms_backup_filename_BAK = sms_backup_filename + '.BAK'
     if os.path.exists(sms_backup_filename):
         if os.path.exists(sms_backup_filename_BAK):
-            if verbosity >= VERBOSE:
-                print('>> Removing', os.path.abspath(sms_backup_filename_BAK))
+            print('>> Removing', os.path.abspath(sms_backup_filename_BAK))
             os.remove(sms_backup_filename_BAK)
-        if verbosity >= VERBOSE:
-            print('>> Renaming existing SMS/MMS output file to', os.path.abspath(sms_backup_filename_BAK))
+        print('>> Renaming existing SMS/MMS output file to', os.path.abspath(sms_backup_filename_BAK))
         os.rename(sms_backup_filename, sms_backup_filename_BAK)
 
-    if verbosity >= VERBOSE:
-        print('>> SMS/MMS will be written to',  get_aka_path(sms_backup_filename))
-        print(">>")
+    print('>> SMS/MMS from Google Voice will be written to',  get_aka_path(sms_backup_filename))
+    print(">>")
 
     call_backup_filename_BAK = call_backup_filename + '.BAK'
     if os.path.exists(call_backup_filename):
         if os.path.exists(call_backup_filename_BAK):
-            if verbosity >= VERBOSE:
-                print('>> Removing', os.path.abspath(call_backup_filename_BAK))
+            print('>> Removing', os.path.abspath(call_backup_filename_BAK))
             os.remove(call_backup_filename_BAK)
-        if verbosity >= VERBOSE:
-            print('>> Renaming existing Calls output file to', os.path.abspath(call_backup_filename_BAK))
+        print('>> Renaming existing Calls output file to', os.path.abspath(call_backup_filename_BAK))
         os.rename(call_backup_filename, call_backup_filename_BAK)
 
-    if verbosity >= VERBOSE:
-        print('>> Call history will be written to', get_aka_path(call_backup_filename))
-        print(">>")
+    print('>> Call history from Google Voice will be written to', get_aka_path(call_backup_filename))
+    print(">>")
 
     vm_backup_filename_BAK = vm_backup_filename + '.BAK'
     if os.path.exists(vm_backup_filename):
         if os.path.exists(vm_backup_filename_BAK):
-            if verbosity >= VERBOSE:
-                print('>> Removing', os.path.abspath(vm_backup_filename_BAK))
+            print('>> Removing', os.path.abspath(vm_backup_filename_BAK))
             os.remove(vm_backup_filename_BAK)
-        if verbosity >= VERBOSE:
-            print('>> Renaming existing Voicemail output file to', os.path.abspath(vm_backup_filename_BAK))
+        print('>> Renaming existing Voicemail output file to', os.path.abspath(vm_backup_filename_BAK))
         os.rename(vm_backup_filename, vm_backup_filename_BAK)
 
-    if verbosity >= VERBOSE:
-        print('>> Voicemail MMS will be written to', get_aka_path(vm_backup_filename))
-        print(">>")
+    print('>> Voicemail MMS from Google Voice will be written to', get_aka_path(vm_backup_filename))
+    print(">>")
 
-    # OK, this isn't an output file. So sue me.
-    if os.path.exists(contacts_filename):
-        with open(contacts_filename) as cnf: 
-            cn_data = cnf.read() 
-            contacts_keyed_by_name = json.loads(cn_data)
-            for name, number in contacts_keyed_by_name.items():
-                contacts_keyed_by_number[number] = name
-            counters['contacts_read_from_file'] = len(contacts_keyed_by_name)
-            if verbosity >= VERBOSE:
-                print('>> Reading contacts from JSON contacts file', os.path.abspath(contacts_filename))
-    else:
-            if verbosity >= VERBOSE:
-                print('>> No (optional) JSON contacts file', os.path.abspath(contacts_filename))
+    chat_backup_filename_BAK = chat_backup_filename + '.BAK'
+    if os.path.exists(chat_backup_filename):
+        if os.path.exists(chat_backup_filename_BAK):
+            print('>> Removing', os.path.abspath(chat_backup_filename_BAK))
+            os.remove(chat_backup_filename_BAK)
+        print('>> Renaming existing SMS/MMS output file to', os.path.abspath(chat_backup_filename_BAK))
+        os.rename(chat_backup_filename, chat_backup_filename_BAK)
 
-    if verbosity >= VERBOSE:
-        print(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
+    print('>> SMS/MMS from Google Chat will be written to', get_aka_path(chat_backup_filename))
+    print(">>")
+
+    print(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
 
 # In some extreme cases, we have to pick our the correspondent from the name
 # of the file. It can be a phone number or a contact name, or it can be completely missing.
 def get_name_or_number_from_filename(html_basename):
     global phone_number_from_filename, contact_name_from_filename
-    phone_number_from_filename = None
     contact_name_from_filename = None
-    # phone number with optional "+"
-    match_phone_number = re.match(r'(\+?[0-9]+) - ', html_basename)
-    if match_phone_number:
-        phone_number_from_filename = match_phone_number.group(1)
-    else:
+    phone_number_from_filename = is_phone_number(html_basename)
+    if not phone_number_from_filename:
         # sometimes a single " - ", sometimes two of them
         match_name = re.match(r'([^ ].*) - .+ - ', html_basename)
         if not match_name:
@@ -865,6 +918,8 @@ def get_name_or_number_from_filename(html_basename):
             contact_name_from_filename = match_name.group(1)
             if contact_name_from_filename == "Group Conversation":
                 contact_name_from_filename = None
+    return (contact_name_from_filename, phone_number_from_filename)
+
 
 def get_name_or_number_from_title():
     global phone_number_from_html_title, contact_name_from_html_title
@@ -877,9 +932,9 @@ def get_name_or_number_from_title():
     correspondent = split[len(split)-1].strip()
     
     if not correspondent:
-        return
+        return (None, None)
 
-    match_phone_number = re.match(r'(\+?[0-9]+)', correspondent)
+    match_phone_number = is_phone_number(correspondent)
     if match_phone_number:
         # I think this doesn't actually happen
         phone_number_from_html_title = match_phone_number.group(1)
@@ -887,6 +942,7 @@ def get_name_or_number_from_title():
         contact_name_from_html_title = correspondent
         if contact_name_from_html_title == "Group Conversation":
             contact_name_from_html_title = None
+    return (contact_name_from_html_title, phone_number_from_html_title)
 
 # Iterate all of the vcards in the HTML body to speculatively populate the
 # contacts list. Also make a note of a contact which is "not me" for
@@ -895,29 +951,32 @@ def get_name_or_number_from_title():
 def scan_vcards_for_contacts(html_target, parent_elt):
     global me
     not_me_vcard_number = None
+    # We make the simplifying assumption that the timestamps in any given HTML file
+    # are close (enough) together and it doesn't matter much which one we use for
+    # the contact timestamp. 
+    timestamp = get_time_unix(parent_elt)
+    
     vcard_elts = parent_elt.find_all(class_="vcard")
     for vcard_elt in vcard_elts:
         this_number, this_name = get_number_and_name_from_tel_elt_parent(vcard_elt)
         if this_number:
             if this_name != "Me":
                 not_me_vcard_number = this_number
-            # In case of conflicts, last writer wins
             if this_name:
-                existing_number = contacts_keyed_by_name.get(this_name, None)
-                contacts_keyed_by_name[this_name] = this_number
-                contacts_keyed_by_number[this_number] = this_name
-                if existing_number and this_number != existing_number:
-                    conflict_set = conflicting_contacts.get(this_name, None)
-                    if not conflict_set:
-                        conflict_set = set()
-                        conflict_set.add(existing_number)
-                    if not this_number in conflict_set:
-                        if verbosity >= QUIET:
-                            print(f'>> Info: conflicting information about "{this_name}":', this_number, conflict_set)
-                            print(f'>>    due to File: "{get_abs_path(html_target)}"')
+                number_is_known = contacts_oracle.is_already_known_pair(this_name, this_number)
+                if contacts_oracle.add_discovered_contact(this_name, this_number, timestamp):
+                    counters['number_of_discovered_contacts'] += 1
+                if not number_is_known:
+                    conflict_list = conflicting_contacts.get(this_name, None)
+                    if not conflict_list:
+                        conflict_list = list()
+                        conflict_list.append(this_number)
+                    if not this_number in conflict_list:
+                        print(f'>> Info: conflicting information about "{this_name}":', conflict_list, f"'{this_number}'")
+                        print(f'>>    due to File: "{get_abs_path(html_target)}"')
                         counters['conflict_warnings'] += 1
-                        conflict_set.add(this_number)
-                    conflicting_contacts[this_name] = conflict_set
+                        conflict_list.append(this_number)
+                    conflicting_contacts[this_name] = conflict_list
     return not_me_vcard_number
 
 def get_number_and_name_from_tel_elt_parent(parent_elt):
@@ -938,8 +997,208 @@ def get_number_and_name_from_tel_elt_parent(parent_elt):
             return this_number, None
         this_name = fn_elt.get_text()
         # Sometimes the "name" ends up being a repeat of the phone number, which is useless for us
-        if not this_name or re.match(r'\+?[0-9]+', this_name):
+        if not this_name or is_phone_number(this_name):
             return this_number, None
     return this_number, this_name
 
+# The (optional) contacts file can have these types of entries:
+# 1. some name: some other name          (this is a simple aliasing scheme for contact names)
+# 2. some name: some number              (a degenerate case that is turned into a list)
+# 3. some name: [some list of numbers]   (all of these numbers are acceptable for this contact name; leftmost is preferred)
+# 4. some number: some other number      (if some number is seen, some other number will be used in output)
+class ContactsOracle:
+    def __init__(self, contacts_filename, policy):
+        self._contacts_filename = contacts_filename
+        self._name_to_name = dict()
+        self._number_to_number = dict()
+        self._name_to_numbers = dict()
+        self._number_to_name = dict()
+        self._policy = policy
+        
+        if not os.path.exists(self._contacts_filename):
+            print('>> No (optional) JSON contacts file', os.path.abspath(self._contacts_filename))
+            return
+        
+        print('>> Reading contacts from JSON contacts file', os.path.abspath(self._contacts_filename))
+        with open(self._contacts_filename) as cnf: 
+            cn_data = cnf.read() 
+        parsed_file = json.loads(cn_data)
+        for key, value in parsed_file.items():
+            key_is_name = not is_phone_number(key)
+            if key_is_name:
+                self._do_name_entry(key, value)
+            else:
+                self._do_number_entry(key, value)
+
+        print(">> JSON contact configuration counts:")
+        print(f'>> {len(self._name_to_numbers):6} Name-to-number(s) entries')
+        print(f'>> {len(self._name_to_name):6} Name-to-name entries')
+        print(f'>> {len(self._number_to_number):6} Number-to-number entries')
+        print(f'>> {len(self._number_to_name):6} Number-to-name entries (computed)')
+        print(f">> Contact phone number replacement policy is '{self._policy}'")
+
+    def _do_name_entry(self, name, value):
+        if isinstance(value, str):
+            if not is_phone_number(value):
+                # not mapping to a number, so must be an alias
+                self._name_to_name[name] = value
+                return
+            values = [value]  # simple scalar; make it a list
+        elif isinstance(value, list):
+            values = value
+        else:
+            raise Exception(f'"{name}" entry value of type {type(value)} is not a string or a list: {value}\n    in {get_aka_path(self._contacts_filename)}')
+
+        far_future = 5_000_000_000_000  # a pseudo-Unix timestamp, in ms, in the distant future
+        for ii in range(len(values)):
+            value = values[ii]
+            if not is_phone_number(value):
+                raise Exception(f'"{name}" entry value of type {type(value)} is not a phone number: {value}\n    in {get_aka_path(self._contacts_filename)}')
+            # (value, timestamp, isconfigured)
+            timestamped_number = (value, far_future - ii, True)
+            values[ii] = timestamped_number
+            self._number_to_name[value] = name
+        # these are already reverse sorted; just belt and suspenders
+        values.sort(key=itemgetter(1), reverse=True)
+        self._name_to_numbers[name] = values
+        
+    def _do_number_entry(self, number, value):
+        if not isinstance(value, str) or not is_phone_number(value):
+            raise Exception(f'"{number}" entry value of type {type(value)} is not a phone number: {value}\n    in {get_aka_path(self._contacts_filename)}')
+        self._number_to_number[number] = value
+        
+    def is_already_known_pair(self, name, number):
+        if not name or not number:
+            return False
+        existing_list = self._name_to_numbers.get(name, None)
+        if not existing_list:
+            alias_to = self._name_to_name.get(name, None)
+            return self.is_already_known_pair(alias_to, number)
+        for this_number, __, __ in existing_list:
+            if this_number == number:
+                return True
+        return False
+        
+    # This is really inefficient, but we're banking on the set of contacts being managable
+    def add_discovered_contact(self, name, number, timestamp):
+        # We could ignore any discovered contacts for policy "configured", but we want to 
+        # do proper countihg and give messages to the user, etc.
+        if is_phone_number(name):
+            # it's a number that pairs with itself instead of a name, so ignore it.
+            return False
+        existing_list = self._name_to_numbers.get(name, None)
+        if not existing_list:
+            existing_list = []
+            self._name_to_numbers[name] = existing_list
+        found_it = False
+        # (value, timestamp, isconfigured)
+        new_tuple = (number, timestamp, False)
+        for ii in range(len(existing_list)):
+            this_tuple = existing_list[ii]
+            this_number, this_timestamp, this_isconfigured = this_tuple
+            if this_number == number:
+                found_it = True
+                if timestamp > this_timestamp:
+                    # it's a newer discovery
+                    # we only want to update discovered items, but the timestamps of the configured items 
+                    # will already deal with that because configured timestamps are artificially far future
+                    existing_list[ii] = new_tuple
+                break
+
+        if not found_it:
+            existing_list.append(new_tuple)
+            self._number_to_name[number] = name
+            
+        existing_list.sort(key=itemgetter(1), reverse=True)
+        
+        return not found_it
+
+    # The strategy for this method and the next is to first do a lookup by the 
+    # passed in key. If that doesn't yield a result, see if the key is an 
+    # alias and try again with the pointed-to key. We'll eventually get a hit
+    # or reach the end of the chain.
+    # The argument "number" is typically None, but if it does have a value
+    # we'll see if we can do better, where "better" is according to policy.
+    def get_number_by_name(self, name, number):
+        if not name:                            return number  # only happens by recursion
+        elif self._policy == POLICY_ASIS:       return self._policy_asis(name, number)
+        elif self._policy == POLICY_CONFIGURED: return self._policy_configured(name, number)
+        elif self._policy == POLICY_NEWEST:     return self._policy_newest(name)
+        else:
+            raise Exception(f'We don''t recognize this number policy: "{self._policy}". It''s probably a bug in the script.')
+    
+    def _policy_asis(self, name, number):
+        if number:
+            return number
+        else:
+            try:
+                self._policy = POLICY_NEWEST
+                return self.get_number_by_name(name, number)
+            finally:
+                self._policy = POLICY_ASIS                    
+        
+    def _policy_newest(self, name):
+        candidate_list = self._name_to_numbers.get(name, None)
+        if candidate_list:
+            # candidate_list will be a list with the first item the preferred number
+            this_number, this_timestamp, this_isconfigured = candidate_list[0]
+            return this_number
+        else:
+            aliased_to = self._name_to_name.get(name, None)
+            return self.get_number_by_name(aliased_to, None)
+        
+    def _policy_configured(self, name, number):
+        value = None
+        candidate_list = self._name_to_numbers.get(name, None)
+        if candidate_list:
+            # if no candidate number was passed in, return the best configured number
+            if not number:
+                this_number, this_timestamp, this_isconfigured = candidate_list[0]
+                if this_isconfigured:
+                    value = this_number
+            else:
+                # a number was passed in, so vet it
+                for this_number, this_timestamp, this_isconfigured in candidate_list:
+                    if this_isconfigured and number == this_number:
+                        value = this_number
+                        break
+    
+        if value:
+            return value
+        else:
+            aliased_to = self._name_to_name.get(name, None)
+            return self.get_number_by_name(aliased_to, None)
+
+    def get_name_by_number(self, number):
+        if not number:
+            return None
+        value = self._number_to_name.get(number, None)
+        if value:
+            return value
+
+        return self.get_name_by_number(self._number_to_number.get(number, None))
+
+    def get_best_number(self, number):
+        name = self.get_name_by_number(number)
+        if name:
+            return self.get_number_by_name(name, number)
+        else:
+            return number
+        
+    def dump(self):
+        pp = pprint.PrettyPrinter(indent=2, width=100)
+        print()
+        print("Mappings of names-to-numbers (configured and discovered):")
+        pp.pprint(self._name_to_numbers)
+        print()
+        print("Mappings of numbers-to-names (computed reverse mappings)")
+        pp.pprint(self._number_to_name)
+        print()
+        print("Mappings of names-to-names (configured name aliases):")
+        pp.pprint(self._name_to_name)
+        print()
+        print("Mappings of numbers-to-numbers (configured number aliases):")
+        pp.pprint(self._number_to_number)
+
 main()
+

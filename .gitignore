@@ -1,9 +1,8 @@
-test_data/calls-gvoice-all.xml
-test_data/calls-gvoice-all.xml.BAK
-test_data/sms-gvoice-all.xml
-test_data/sms-gvoice-all.xml.BAK
-test_data/sms-vm-gvoice-all.xml
-test_data/sms-vm-gvoice-all.xml.BAK
+test_data/*.BAK
+test_data/calls-gvoice.xml
+test_data/sms-gvoice.xml
+test_data/sms-vm-gvoice.xml
+test_data/sms-chat.xml
 
 venv
 
