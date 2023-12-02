@@ -323,7 +323,8 @@ there is no ambiguity.
 That unique number will be used for that contact throughout the output files.
 
 In cases where there are multiple numbers for the same contact name,
-you can specify what you want to do about it.
+you can specify what you want to do about it,
+which can affect how conversations appear when you restore the backup files.
 This is called the number replacement policy or simply the number policy.
 Here are the possibilties:
 - `asis`: (Default) When a given number is found along with that contact name, 
@@ -355,3 +356,7 @@ This can be helpful in sorting out data problems.
 It can otherwise be tedious to look through various input files to try to figure out where things have gone sideways.
 This info is not dumped by default because most people will not need it.
 It's there as an additional concise source of information if you need it.
+
+NOTE: The dumped data tends to use single quote marks.
+If you copy and paste that into the JSON contacts file, be sure to switch them to double quote marks.
+

@@ -17,7 +17,7 @@ import argparse
 from operator import itemgetter
 import pprint
 
-__updated__ = "2023-11-30 12:48"
+__updated__ = "2023-12-02 14:23"
 
 sms_backup_file  = None
 call_backup_file = None
@@ -171,15 +171,16 @@ def main():
         
         write_dummy_headers()
         
-        me_contact = contacts_oracle.get_number_by_name('Me', None)
-        if not me_contact:
+        me_contact_number = contacts_oracle.get_number_by_name('Me', None)
+        if not me_contact_number:
             print()
             print("Unfortunately, we can't figure out your own phone number.")
             print('TODO: Missing +phonenumber for contact: "Me": "+",')
             counters['todo_errors'] += 1
             missing_contacts.add('Me')
         else:
-            print(">> Your 'Me' phone number is", me_contact)
+            print(f">> Your 'Me' phone number is {me_contact_number}")
+
         print('>> 2nd pass reading *.html files under', get_aka_path(voice_directory))
         # second pass over GV files
         for subdirectory, __, files in os.walk(voice_directory):
@@ -200,8 +201,9 @@ def main():
         contacts_oracle.dump()
 
 def process_one_chat_file(subdirectory):
-    participants = process_chat_group_info(subdirectory)
-    process_chat_messages(subdirectory, participants)
+    #participants = process_chat_group_info(subdirectory)
+    #process_chat_messages(subdirectory, participants)
+    pass
 
 def process_one_voice_file(is_first_pass, html_target):
     global html_elt
@@ -366,7 +368,10 @@ def write_mms_message_for_vm(html_target):
     if not sender:
         sender = get_sender_number_from_title_or_filename(html_target)
     if not sender_name:
-        sender_name = contacts_oracle.get_name_by_number(sender)
+        names = contacts_oracle.get_names_by_number(sender)
+        if names:
+            for sender_name in names:
+                break
 
     participants = [sender] if sender else [BOGUS_NUMBER]
     timestamp = get_time_unix(body_elt)
@@ -706,8 +711,11 @@ def get_mms_participant_phone_numbers(html_target, participants_elt):
             raw_number = contact_name_to_number(get_sender_name_from_title_or_filename(html_target))
         phone_number = contacts_oracle.get_best_number(raw_number)
         if not phone_number:
-            contact_name = contacts_oracle.get_name_by_number(raw_number)
-            if not contact_name:
+            contact_names = contacts_oracle.get_names_by_number(raw_number)
+            if contact_names:
+                for contact_name in contact_names:
+                    break
+            else:
                 contact_name = get_sender_name_from_title_or_filename(html_target)
             print()
             print(f'TODO: Missing or disallowed +phonenumber for contact: "{contact_name}": "{raw_number}",')
@@ -822,10 +830,12 @@ def print_counters(contacts_filename, sms_backup_filename, vm_backup_filename, c
 #    print("Winter", contacts_oracle.get_number_by_name("Mike Winter", None))
 #    print("Dang", contacts_oracle.get_number_by_name("Quynh Dang", None))
 #    print("None", contacts_oracle.get_number_by_name("Nobody", None))
-#    print("111111111", contacts_oracle.get_name_by_number("111111111"))
-#    print("22222222", contacts_oracle.get_name_by_number("22222222"))
-#    print("+17148123062", contacts_oracle.get_name_by_number("+17148123062"))
-#    contacts_oracle.dump()
+#    print("111111111", contacts_oracle.get_names_by_number("111111111"))
+#    print("22222222", contacts_oracle.get_names_by_number("22222222"))
+#    print("+17148123062", contacts_oracle.get_names_by_number("+17148123062"))
+    print(">> Me", contacts_oracle.get_number_by_name("Me", None))
+    print(">> Me", contacts_oracle.get_number_by_name("The Other Me", None))
+    print(">> Me", contacts_oracle.get_number_by_name("Aliased Me", None))
     
 def write_real_headers(sms_backup_filename, vm_backup_filename, call_backup_filename, chat_backup_filename):
     print()
@@ -1012,7 +1022,7 @@ class ContactsOracle:
         self._name_to_name = dict()
         self._number_to_number = dict()
         self._name_to_numbers = dict()
-        self._number_to_name = dict()
+        self._number_to_names = dict()
         self._policy = policy
         
         if not os.path.exists(self._contacts_filename):
@@ -1034,7 +1044,7 @@ class ContactsOracle:
         print(f'>> {len(self._name_to_numbers):6} Name-to-number(s) entries')
         print(f'>> {len(self._name_to_name):6} Name-to-name entries')
         print(f'>> {len(self._number_to_number):6} Number-to-number entries')
-        print(f'>> {len(self._number_to_name):6} Number-to-name entries (computed)')
+        print(f'>> {len(self._number_to_names):6} Number-to-names entries (computed)')
         print(f">> Contact phone number replacement policy is '{self._policy}'")
 
     def _do_name_entry(self, name, value):
@@ -1057,15 +1067,22 @@ class ContactsOracle:
             # (value, timestamp, isconfigured)
             timestamped_number = (value, far_future - ii, True)
             values[ii] = timestamped_number
-            self._number_to_name[value] = name
+            self._add_number_to_name_item(name, value)
         # these are already reverse sorted; just belt and suspenders
         values.sort(key=itemgetter(1), reverse=True)
         self._name_to_numbers[name] = values
         
-    def _do_number_entry(self, number, value):
-        if not isinstance(value, str) or not is_phone_number(value):
-            raise Exception(f'"{number}" entry value of type {type(value)} is not a phone number: {value}\n    in {get_aka_path(self._contacts_filename)}')
-        self._number_to_number[number] = value
+    def _add_number_to_name_item(self, name, number):
+        existing = self._number_to_names.get(number, None)
+        if not existing:
+            existing = set()
+            self._number_to_names[number] = existing
+        existing.add(name)  # it's a set, so we don't care if it's duplicate
+        
+    def _do_number_entry(self, number, name):
+        if not isinstance(name, str) or not is_phone_number(name):
+            raise Exception(f'"{number}" entry value of type {type(name)} is not a phone number: {name}\n    in {get_aka_path(self._contacts_filename)}')
+        self._number_to_number[name] = number
         
     def is_already_known_pair(self, name, number):
         if not name or not number:
@@ -1088,7 +1105,7 @@ class ContactsOracle:
             return False
         existing_list = self._name_to_numbers.get(name, None)
         if not existing_list:
-            existing_list = []
+            existing_list = list()
             self._name_to_numbers[name] = existing_list
         found_it = False
         # (value, timestamp, isconfigured)
@@ -1107,7 +1124,7 @@ class ContactsOracle:
 
         if not found_it:
             existing_list.append(new_tuple)
-            self._number_to_name[number] = name
+            self._add_number_to_name_item(name, number)
             
         existing_list.sort(key=itemgetter(1), reverse=True)
         
@@ -1169,19 +1186,34 @@ class ContactsOracle:
             aliased_to = self._name_to_name.get(name, None)
             return self.get_number_by_name(aliased_to, None)
 
-    def get_name_by_number(self, number):
+    def get_names_by_number(self, number):
         if not number:
             return None
-        value = self._number_to_name.get(number, None)
+        value = self._number_to_names.get(number, None)
         if value:
             return value
 
-        return self.get_name_by_number(self._number_to_number.get(number, None))
+        return self.get_names_by_number(self._number_to_number.get(number, None))
 
     def get_best_number(self, number):
-        name = self.get_name_by_number(number)
-        if name:
-            return self.get_number_by_name(name, number)
+        if self._policy == POLICY_ASIS:
+            return number
+        best_timestamp = 0
+        best_number = None
+        names = self.get_names_by_number(number)
+        if names:
+            for name in names:
+                # iterate overa all the names, choosing the latest timestamp from among all of them
+                tuples = self._name_to_numbers.get(name, None)
+                if tuples:
+                    this_number, this_timestamp, this_isconfigured = tuples[0]
+                    if self._policy == POLICY_CONFIGURED and not this_isconfigured:
+                        continue
+                    if this_timestamp > best_timestamp:
+                        best_timestamp = this_timestamp
+                        best_number = this_number
+            if best_number:
+                return best_number
         else:
             return number
         
@@ -1192,7 +1224,7 @@ class ContactsOracle:
         pp.pprint(self._name_to_numbers)
         print()
         print("Mappings of numbers-to-names (computed reverse mappings)")
-        pp.pprint(self._number_to_name)
+        pp.pprint(self._number_to_names)
         print()
         print("Mappings of names-to-names (configured name aliases):")
         pp.pprint(self._name_to_name)
