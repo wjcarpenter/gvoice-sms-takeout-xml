@@ -17,7 +17,7 @@ import argparse
 from operator import itemgetter
 import pprint
 
-__updated__ = "2023-12-04 11:30"
+__updated__ = "2023-12-04 14:06"
 
 sms_backup_file  = None
 call_backup_file = None
@@ -206,7 +206,6 @@ def main():
         contacts_oracle.dump()
 
 def process_one_chat_directory(me_contact_number, subdirectory):
-    print(".....")
     participants = process_chat_group_info(me_contact_number, subdirectory)
     process_chat_messages(subdirectory, participants)
 
@@ -243,7 +242,16 @@ def process_chat_group_info(me_contact_number, subdirectory):
                     participants.append(name_number)
                 else:
                     participants.append(email_number)
+    me_in_participants = True 
     if participants and not me_contact_number in participants:
+        me_in_participants = False 
+        for particpant in participants:
+            names = contacts_oracle.get_names_by_number(particpant)
+            if names and 'Me' in names:
+                me_in_participants = True
+                break
+            
+    if not me_in_participants:            
         print(f'>> Info: Chat participants list does not include the "Me" phone number {me_contact_number}: {participants}')
         print(f'>>    due to File: "{get_abs_path(json_target)}"')
         
@@ -1251,7 +1259,7 @@ class ContactsOracle:
         number = self.apply_nanp_heuristics(number)
         if self._policy == POLICY_ASIS:
             return number
-        best_timestamp = 0
+        best_timestamp = '0000'
         best_number = None
         names = self.get_names_by_number(number)
         if names:

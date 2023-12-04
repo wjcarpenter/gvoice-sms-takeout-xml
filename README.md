@@ -197,6 +197,11 @@ It's not too important for you to understand those edge cases,
 but the script works hard to deal with them.
 JSON files from Google Chat don't contain phone numbers,
 so any discovery of phone numbers comes from the HTML files from Google Voice.
+The Google Voice files are processed first, 
+so any discovered contact numbers can be used when processing the Google Chat files.
+Google Chat files contain a contact name and a contact email address.
+A phone number for either is sufficient, 
+whether configured in the JSON contacts file or discovered in the Google Voice HTML files.
 
 Two main techniques are used.
 - First, the script notices name-to-number mappings as it encounters them in HTML files, 
@@ -227,6 +232,10 @@ TODO: Missing or disallowed +phonenumber for contact: "Agatha M Christie": "+",
 
 TODO: Missing contact phone number in HTML file. Using '0000000000'.
       due to File: "/home/wjc/git/gvoice-sms-takeout-xml/test_data/Takeout/Voice/Calls/ - Placed - 2013-07-29T20_56_11Z.html"
+
+TODO:     Missing or disallowed +phonenumber for contact: "F Scott Fitzgerald": "+",
+TODO: and Missing or disallowed +phonenumber for contact: "fskf@authors.example.com": "+",
+      due to File: "/home/wjc/git/gvoice-sms-takeout-xml/test_data/Takeout/Google Chat/Groups/Space AAAAdvGdRgs/group_info.json"
 ```
 The TODO for `Me` is a special case.
 The script couldn't figure out your phone number (which it usually can do), 
@@ -236,6 +245,9 @@ where "0000000000" is used instead,
 usually indicates some kind of glitch in the indicated input file.
 Have a look at it. 
 If it's not too important to you, probably the simplest course is to delete that input file.
+Because Google Chat contacts can be resolved from either the email address or the contact name,
+the last item above is an example where there is not a number for either one.
+Adding a configured number to the JSON contacts file for either the email address or the name will take care of it.
 
 If you get any of those other messages, add entries for those contacts into the JSON file.
 Obviously, create that file if you haven't done so earlier.
@@ -244,7 +256,8 @@ That will give you something like:
 ```
 {
   "Me": "+17323210011",
-  "Agatha M Christie": "+17323211111"
+  "Agatha M Christie": "+17323211111",
+  "fskf@authors.example.com": "+17323215555"
 }
 ```
 Add the contact name exactly as shown in the TODO message. 
