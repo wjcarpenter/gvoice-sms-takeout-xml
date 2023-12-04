@@ -10,14 +10,14 @@ import dateutil.parser
 import datetime
 from calendar import timegm
 import base64
-from io import open # adds emoji support
+from io import open
 import json
 import isodate
 import argparse
 from operator import itemgetter
 import pprint
 
-__updated__ = "2023-12-02 16:20"
+__updated__ = "2023-12-04 11:30"
 
 sms_backup_file  = None
 call_backup_file = None
@@ -180,7 +180,7 @@ def main():
         if not me_contact_number:
             print()
             print("Unfortunately, we can't figure out your own phone number.")
-            print('TODO: Missing +phonenumber for contact: "Me": "+",')
+            print('TODO: Missing or disallowed +phonenumber for contact: "Me": "+",')
             counters['todo_errors'] += 1
             missing_contacts.add('Me')
         else:
@@ -226,12 +226,14 @@ def process_chat_group_info(me_contact_number, subdirectory):
         email_number = contacts_oracle.get_number_by_name(email, None)
         name = member["name"]
         name_number = contacts_oracle.get_number_by_name(name, None)
-        if not email_number and not name_number:
+        if (not email_number and email not in missing_contacts) and (not name_number and name not in missing_contacts):
             print()
             print(f'TODO:     Missing or disallowed +phonenumber for contact: "{name}": "+",')
             print(f'TODO: and Missing or disallowed +phonenumber for contact: "{email}": "+",')
             print(f'      due to File: "{get_abs_path(json_target)}"')
             counters['todo_errors'] += 1
+            missing_contacts.add(name)
+            missing_contacts.add(email)
         else:
             if email_number and name_number and email_number != name_number:
                 print(f'>> Info: conflicting information for email {email}: {email_number} versus name {name}: {name_number}. Using {name_number}.')
@@ -812,6 +814,11 @@ def get_time_unix(message):
     unix_epoch_time_millis = timegm_millis - utc_offset_millis
     return int(unix_epoch_time_millis)
 
+def unix_to_iso_time(unix_time_seconds):
+    dt = datetime.datetime.fromtimestamp(unix_time_seconds, datetime.timezone.utc)
+    iso = dt.isoformat()
+    return iso
+
 def get_aka_path(path):
     if os.path.isabs(path):
         return path
@@ -855,7 +862,7 @@ def write_dummy_headers():
     chat_backup_file.write("<!--Converted from Google Chat Takeout data -->\n")
 
 def print_counters(contacts_filename, sms_backup_filename, vm_backup_filename, call_backup_filename, chat_backup_filename):
-    pp = pprint.PrettyPrinter(indent=2, width=100)
+    pp = pprint.PrettyPrinter(indent=2, width=132)
     print(">> Counters:")
     print(f">> {counters['number_of_voice_sms_output']:6} SMS/MMS records from Google Voice written to {get_aka_path(sms_backup_filename)}")
     print(f">> {counters['number_of_vms_output']:6} Voicemail records from Google Voice written to {get_aka_path(vm_backup_filename)}")
@@ -999,8 +1006,8 @@ def scan_vcards_for_contacts(html_target, parent_elt):
     not_me_vcard_number = None
     # We make the simplifying assumption that the timestamps in any given HTML file
     # are close (enough) together and it doesn't matter much which one we use for
-    # the contact timestamp. 
-    timestamp = get_time_unix(parent_elt)
+    # the contact timestamp. We also ignore milliseconds.
+    timestamp = get_time_unix(parent_elt) / 1000
     
     vcard_elts = parent_elt.find_all(class_="vcard")
     for vcard_elt in vcard_elts:
@@ -1094,14 +1101,15 @@ class ContactsOracle:
         else:
             raise Exception(f'"{name}" entry value of type {type(value)} is not a string or a list: {value}\n    in {get_aka_path(self._contacts_filename)}')
 
-        far_future = 5_000_000_000_000  # a pseudo-Unix timestamp, in ms, in the distant future
+        far_future = 2_000_000_000  # a pseudo-Unix timestamp, in seconds, in the distant future
         for ii in range(len(values)):
             value = values[ii]
             if not is_phone_number(value):
                 raise Exception(f'"{name}" entry value of type {type(value)} is not a phone number: {value}\n    in {get_aka_path(self._contacts_filename)}')
             # (value, timestamp, isconfigured)
             value = self.apply_nanp_heuristics(value)
-            timestamped_number = (value, far_future - ii, True)
+            far_future_iso = unix_to_iso_time(far_future - ii)
+            timestamped_number = (value, far_future_iso, True)
             values[ii] = timestamped_number
             self._add_number_to_name_item(name, value)
         # these are already reverse sorted; just belt and suspenders
@@ -1130,7 +1138,8 @@ class ContactsOracle:
         if not existing_list:
             alias_to = self._name_to_name.get(name, None)
             return self.is_already_known_pair(alias_to, number)
-        for this_number, __, __ in existing_list:
+        for list_item in existing_list:
+            this_number = list_item[0]
             if this_number == number:
                 return True
         return False
@@ -1149,13 +1158,14 @@ class ContactsOracle:
             self._name_to_numbers[name] = existing_list
         found_it = False
         # (value, timestamp, isconfigured)
-        new_tuple = (number, timestamp, False)
+        iso_timestamp = unix_to_iso_time(timestamp)
+        new_tuple = (number, iso_timestamp, False)
         for ii in range(len(existing_list)):
             this_tuple = existing_list[ii]
             this_number, this_timestamp, this_isconfigured = this_tuple
             if this_number == number:
                 found_it = True
-                if timestamp > this_timestamp:
+                if iso_timestamp > this_timestamp:
                     # it's a newer discovery
                     # we only want to update discovered items, but the timestamps of the configured items 
                     # will already deal with that because configured timestamps are artificially far future
@@ -1246,7 +1256,7 @@ class ContactsOracle:
         names = self.get_names_by_number(number)
         if names:
             for name in names:
-                # iterate overa all the names, choosing the latest timestamp from among all of them
+                # iterate over all the names, choosing the latest timestamp from among all of them
                 tuples = self._name_to_numbers.get(name, None)
                 if tuples:
                     this_number, this_timestamp, this_isconfigured = tuples[0]
@@ -1273,9 +1283,9 @@ class ContactsOracle:
             return number
         
     def dump(self):
-        pp = pprint.PrettyPrinter(indent=2, width=100)
+        pp = pprint.PrettyPrinter(indent=2, width=132)
         print()
-        print("Mappings of names-to-numbers (configured and discovered):")
+        print("Mappings of names-to-numbers (configured True, discovered False):")
         pp.pprint(self._name_to_numbers)
         print()
         print("Mappings of numbers-to-names (computed reverse mappings)")
