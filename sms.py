@@ -17,7 +17,7 @@ import argparse
 from operator import itemgetter
 import pprint
 
-__updated__ = "2023-12-02 14:23"
+__updated__ = "2023-12-02 16:20"
 
 sms_backup_file  = None
 call_backup_file = None
@@ -97,6 +97,7 @@ def main():
     vm_backup_filename   = os.path.join('..', 'sms-vm-gvoice.xml')
     chat_backup_filename = os.path.join('..', 'sms-chat.xml')
     number_policy = POLICY_ASIS
+    nanp_heuritstics = False
     dump_data = False
 
     description = f'Convert Google Takeout HTML and Google Chat JSON files to SMS Backup and Restore XML files. (Version {__updated__})'
@@ -133,6 +134,9 @@ def main():
                            default=number_policy,
                            choices=(POLICY_ASIS, POLICY_CONFIGURED, POLICY_NEWEST),    
                            help=f"Policy for choosing the \"best\" number for a contact. Defaults to \"{number_policy}\".")
+    argparser.add_argument('-n', '--nanp_numbers',
+                           action='store_true',
+                           help=f"Heuristically treat some partial numbers as North American numbers.")
     argparser.add_argument('-z', '--dump_data',
                            action='store_true',
                            help=f"Dump some internal tables at the end of the run, which might help with sorting out some thing.")
@@ -146,9 +150,10 @@ def main():
     chat_directory = args['chat_directory']
     contacts_filename = args['contacts_filename']
     number_policy = args['number_policy']
+    nanp_heuritstics = args['nanp_numbers']
     dump_data = args['dump_data']
 
-    contacts_oracle = ContactsOracle(contacts_filename, number_policy)    
+    contacts_oracle = ContactsOracle(contacts_filename, number_policy, nanp_heuritstics)    
     prep_output_files(sms_backup_filename, vm_backup_filename, call_backup_filename, chat_backup_filename)
     
     print('>> 1st pass reading *.html files under', get_aka_path(voice_directory))
@@ -190,7 +195,7 @@ def main():
 
         print('>> Reading chat files under', get_aka_path(voice_directory))
         for subdirectory, __, __ in os.walk(chat_directory):
-            process_one_chat_file(subdirectory)
+            process_one_chat_directory(me_contact_number, subdirectory)
 
         write_trailers()
     
@@ -200,9 +205,50 @@ def main():
     if dump_data:
         contacts_oracle.dump()
 
-def process_one_chat_file(subdirectory):
-    #participants = process_chat_group_info(subdirectory)
-    #process_chat_messages(subdirectory, participants)
+def process_one_chat_directory(me_contact_number, subdirectory):
+    print(".....")
+    participants = process_chat_group_info(me_contact_number, subdirectory)
+    process_chat_messages(subdirectory, participants)
+
+def process_chat_group_info(me_contact_number, subdirectory):
+    group_info_basename = "group_info.json"
+    group_info_filename = os.path.join(subdirectory, group_info_basename)
+    json_target = (subdirectory, group_info_basename)
+    if not os.path.exists(group_info_filename):
+        return None
+    
+    participants = list()
+    with open(group_info_filename, "r") as fp:
+        parsed_group_info = json.load(fp)
+
+    for member in parsed_group_info["members"]:
+        email = member["email"]
+        email_number = contacts_oracle.get_number_by_name(email, None)
+        name = member["name"]
+        name_number = contacts_oracle.get_number_by_name(name, None)
+        if not email_number and not name_number:
+            print()
+            print(f'TODO:     Missing or disallowed +phonenumber for contact: "{name}": "+",')
+            print(f'TODO: and Missing or disallowed +phonenumber for contact: "{email}": "+",')
+            print(f'      due to File: "{get_abs_path(json_target)}"')
+            counters['todo_errors'] += 1
+        else:
+            if email_number and name_number and email_number != name_number:
+                print(f'>> Info: conflicting information for email {email}: {email_number} versus name {name}: {name_number}. Using {name_number}.')
+                print(f'>>    due to File: "{get_abs_path(json_target)}"')
+            else:
+                if name_number:
+                    participants.append(name_number)
+                else:
+                    participants.append(email_number)
+    if participants and not me_contact_number in participants:
+        print(f'>> Info: Chat participants list does not include the "Me" phone number {me_contact_number}: {participants}')
+        print(f'>>    due to File: "{get_abs_path(json_target)}"')
+        
+    return participants
+
+def process_chat_messages(subdirectory, participants):
+    messages_filename = os.path.join(subdirectory, "messages.json")
     pass
 
 def process_one_voice_file(is_first_pass, html_target):
@@ -826,16 +872,6 @@ def print_counters(contacts_filename, sms_backup_filename, vm_backup_filename, c
     if missing_contacts:
         print(">> Recap of missing or unresolved contacts (not including disallowed numbers):")
         print(f">>    {missing_contacts}")
-        
-#    print("Winter", contacts_oracle.get_number_by_name("Mike Winter", None))
-#    print("Dang", contacts_oracle.get_number_by_name("Quynh Dang", None))
-#    print("None", contacts_oracle.get_number_by_name("Nobody", None))
-#    print("111111111", contacts_oracle.get_names_by_number("111111111"))
-#    print("22222222", contacts_oracle.get_names_by_number("22222222"))
-#    print("+17148123062", contacts_oracle.get_names_by_number("+17148123062"))
-    print(">> Me", contacts_oracle.get_number_by_name("Me", None))
-    print(">> Me", contacts_oracle.get_number_by_name("The Other Me", None))
-    print(">> Me", contacts_oracle.get_number_by_name("Aliased Me", None))
     
 def write_real_headers(sms_backup_filename, vm_backup_filename, call_backup_filename, chat_backup_filename):
     print()
@@ -1017,28 +1053,27 @@ def get_number_and_name_from_tel_elt_parent(parent_elt):
 # 3. some name: [some list of numbers]   (all of these numbers are acceptable for this contact name; leftmost is preferred)
 # 4. some number: some other number      (if some number is seen, some other number will be used in output)
 class ContactsOracle:
-    def __init__(self, contacts_filename, policy):
+    def __init__(self, contacts_filename, policy, nanp_heuritics):
         self._contacts_filename = contacts_filename
         self._name_to_name = dict()
         self._number_to_number = dict()
         self._name_to_numbers = dict()
         self._number_to_names = dict()
         self._policy = policy
+        self._nanp_heuristics = nanp_heuritics
         
         if not os.path.exists(self._contacts_filename):
             print('>> No (optional) JSON contacts file', os.path.abspath(self._contacts_filename))
             return
         
         print('>> Reading contacts from JSON contacts file', os.path.abspath(self._contacts_filename))
-        with open(self._contacts_filename) as cnf: 
-            cn_data = cnf.read() 
-        parsed_file = json.loads(cn_data)
+        with open(self._contacts_filename) as fp: 
+            parsed_file = json.load(fp)
         for key, value in parsed_file.items():
-            key_is_name = not is_phone_number(key)
-            if key_is_name:
-                self._do_name_entry(key, value)
-            else:
+            if is_phone_number(key):
                 self._do_number_entry(key, value)
+            else:
+                self._do_name_entry(key, value)
 
         print(">> JSON contact configuration counts:")
         print(f'>> {len(self._name_to_numbers):6} Name-to-number(s) entries')
@@ -1065,6 +1100,7 @@ class ContactsOracle:
             if not is_phone_number(value):
                 raise Exception(f'"{name}" entry value of type {type(value)} is not a phone number: {value}\n    in {get_aka_path(self._contacts_filename)}')
             # (value, timestamp, isconfigured)
+            value = self.apply_nanp_heuristics(value)
             timestamped_number = (value, far_future - ii, True)
             values[ii] = timestamped_number
             self._add_number_to_name_item(name, value)
@@ -1073,6 +1109,7 @@ class ContactsOracle:
         self._name_to_numbers[name] = values
         
     def _add_number_to_name_item(self, name, number):
+        number = self.apply_nanp_heuristics(number)
         existing = self._number_to_names.get(number, None)
         if not existing:
             existing = set()
@@ -1082,11 +1119,13 @@ class ContactsOracle:
     def _do_number_entry(self, number, name):
         if not isinstance(name, str) or not is_phone_number(name):
             raise Exception(f'"{number}" entry value of type {type(name)} is not a phone number: {name}\n    in {get_aka_path(self._contacts_filename)}')
+        number = self.apply_nanp_heuristics(number)
         self._number_to_number[name] = number
         
     def is_already_known_pair(self, name, number):
         if not name or not number:
             return False
+        number = self.apply_nanp_heuristics(number)
         existing_list = self._name_to_numbers.get(name, None)
         if not existing_list:
             alias_to = self._name_to_name.get(name, None)
@@ -1103,6 +1142,7 @@ class ContactsOracle:
         if is_phone_number(name):
             # it's a number that pairs with itself instead of a name, so ignore it.
             return False
+        number = self.apply_nanp_heuristics(number)
         existing_list = self._name_to_numbers.get(name, None)
         if not existing_list:
             existing_list = list()
@@ -1138,7 +1178,8 @@ class ContactsOracle:
     # we'll see if we can do better, where "better" is according to policy.
     def get_number_by_name(self, name, number):
         if not name:                            return number  # only happens by recursion
-        elif self._policy == POLICY_ASIS:       return self._policy_asis(name, number)
+        number = self.apply_nanp_heuristics(number)
+        if   self._policy == POLICY_ASIS:       return self._policy_asis(name, number)
         elif self._policy == POLICY_CONFIGURED: return self._policy_configured(name, number)
         elif self._policy == POLICY_NEWEST:     return self._policy_newest(name)
         else:
@@ -1189,6 +1230,7 @@ class ContactsOracle:
     def get_names_by_number(self, number):
         if not number:
             return None
+        number = self.apply_nanp_heuristics(number)
         value = self._number_to_names.get(number, None)
         if value:
             return value
@@ -1196,6 +1238,7 @@ class ContactsOracle:
         return self.get_names_by_number(self._number_to_number.get(number, None))
 
     def get_best_number(self, number):
+        number = self.apply_nanp_heuristics(number)
         if self._policy == POLICY_ASIS:
             return number
         best_timestamp = 0
@@ -1215,6 +1258,18 @@ class ContactsOracle:
             if best_number:
                 return best_number
         else:
+            return number
+        
+    def apply_nanp_heuristics(self, number):
+        if not self._nanp_heuristics or not number:
+            return number
+        
+        if len(number) == 10 and not number.startswith('1'):
+            return '+1' + number
+        elif len(number) == 11 and number.startswith('1'):
+            return '+' + number
+        else:
+            # This is unlikely to work out
             return number
         
     def dump(self):

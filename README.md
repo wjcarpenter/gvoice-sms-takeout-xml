@@ -137,10 +137,10 @@ You can get the latest information about command line arguments by running the s
 usage: sms.py [-h] [-d VOICE_DIRECTORY] [-e CHAT_DIRECTORY]
               [-s SMS_BACKUP_FILENAME] [-v VM_BACKUP_FILENAME]
               [-c CALL_BACKUP_FILENAME] [-t CHAT_BACKUP_FILENAME]
-              [-j CONTACTS_FILENAME] [-p {asis,configured,newest}] [-z]
+              [-j CONTACTS_FILENAME] [-p {asis,configured,newest}] [-n] [-z]
 
 Convert Google Takeout HTML and Google Chat JSON files to SMS Backup and
-Restore XML files. (Version 2023-11-30 12:48)
+Restore XML files. (Version 2023-12-02 16:20)
 
 options:
   -h, --help            show this help message and exit
@@ -168,6 +168,8 @@ options:
   -p {asis,configured,newest}, --number_policy {asis,configured,newest}
                         Policy for choosing the "best" number for a contact.
                         Defaults to "asis".
+  -n, --nanp_numbers    Heuristically treat some partial numbers as North
+                        American numbers.
   -z, --dump_data       Dump some internal tables at the end of the run, which
                         might help with sorting out some thing.
 
@@ -349,6 +351,21 @@ Here is an example of a message you might see if you use the `configured` policy
 TODO: Missing or disallowed +phonenumber for contact: "Søren Aabye Kierkegaard": "+17323211414",
       due to File: "/home/wjc/git/gvoice-sms-takeout-xml/test_data/Takeout/Voice/Calls/Group Conversation - 2023-10-01T15_30_41Z.html"
 ```
+### NANP heuristics for phone numbers
+Over the years, various applications and phones have been pretty lenient with me in how my contact phone numbers are formatted.
+I'm in the US, and most of my contact phone numbers are fully formed with a leading `+1` before the area code.
+A few, however, have only the `+` (without the `1`),
+and a few don't have the `+1` at all.
+It can be tedious to create aliases for all those combinations in the contacts JSON file,
+so there is a command line flag to apply "NANP heuristics" to phone numbers.
+(NANP is North American Numbering Plan, which is the system used by many telephone systems in North America.)
+- If there is a `+` and exactly 10 digits, the `+` is changed to `+1`.
+This will be incorrect for some number of non-US phone numbers that properly include a country code other than `1`.
+- If there is a `1` and exactly 10 additional digits, the `1` is changed to `+1`.
+I have mixed feelings about providing this US-centric (actually, North America centric) feature.
+An alternative to this would be fixing up your Google Contacts to have phone numbers with fully formatted country codes before exporting data with Google Takeout.
+If you are in the middle of moving things with this script,
+you could use fix up your contacts and use the heuristic when converting the data.
 ### Dumping runtime data
 There is a command line option, `-z`, 
 to have the script dump out some internal tables at the end of the run.
