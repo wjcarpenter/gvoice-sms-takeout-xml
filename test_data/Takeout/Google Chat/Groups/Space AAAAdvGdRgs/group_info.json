@@ -1,0 +1,20 @@
+{
+  "name": "Group Chat",
+  "members": [
+    {
+      "name": "F Scott Fitzgerald",
+      "email": "fskf@authors.example.com",
+      "user_type": "Human"
+    },
+    {
+      "name": "Edson Arantes do Nascimento",
+      "email": "pele@athletes.example.org",
+      "user_type": "Human"
+    },
+    {
+      "name": "Maria S Curie",
+      "email": "mssc@science.example.org",
+      "user_type": "Human"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "members": [
+    {
+      "name": "Alan A Milne",
+      "email": "aamilne@authors.example.com",
+      "user_type": "Human"
+    },
+    {
+      "name": "Maria S Curie",
+      "email": "mssc@science.example.org",
+      "user_type": "Human"
+    }
+  ]
+}

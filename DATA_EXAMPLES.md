@@ -444,3 +444,53 @@ Transcript: ...
   contact_name="(Unknown)"
 />
 ```
+## A group_info file (from Google Takeout for Google Chat)
+```
+{
+  "members": [
+    {
+      "name": "Alan A Milne",
+      "email": "aamilne@authors.example.com",
+      "user_type": "Human"
+    },
+    {
+      "name": "Maria S Curie",
+      "email": "mssc@science.example.org",
+      "user_type": "Human"
+    }
+  ]
+}
+```
+## A text message (from messages.json in Google Takeout for Google Chat)
+```
+    {
+      "creator": {
+        "name": "Maria S Curie",
+        "email": "mssc@science.example.org",
+        "user_type": "Human"
+      },
+      "created_date": "Wednesday, April 15, 2015 at 12:51:41 AM UTC",
+      "text": "I\u0027ve heard of polymaths, but I think you might be the first demi-math",
+      "topic_id": "beJ6uN-Eb_A",
+      "message_id": "1pRI-QAAAAE/beJ6uN-Eb_A/beJ6uN-Eb_A"
+    },
+```
+## A JPEG attachment message (from messages.json in Google Takeout for Google Chat)
+```
+    {
+      "creator": {
+        "name": "Alan A Milne",
+        "email": "aamilne@authors.example.com",
+        "user_type": "Human"
+      },
+      "created_date": "Monday, April 27, 2015 at 8:29:01 PM UTC",
+      "attached_files": [
+        {
+          "original_name": "2015-04-27.jpg",
+          "export_name": "File-2015-04-27.jpg"
+        }
+      ],
+      "topic_id": "N-9_2Qw6DvE",
+      "message_id": "1pRI-QAAAAE/N-9_2Qw6DvE/N-9_2Qw6DvE"
+    },
+```

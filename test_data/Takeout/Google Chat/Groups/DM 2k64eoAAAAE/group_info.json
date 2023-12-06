@@ -1,0 +1,14 @@
+{
+  "members": [
+    {
+      "name": "Albert Einstein",
+      "email": "emc2@science.example.org",
+      "user_type": "Human"
+    },
+    {
+      "name": "Maria S Curie",
+      "email": "mssc@science.example.org",
+      "user_type": "Human"
+    }
+  ]
+}
