@@ -22,6 +22,8 @@ Here are the possible contact names and numbers.
 You don't need to add any of these to `contacts.json`
 (in this directory, one level above `Takeouts/`)
 unless instructed to do so by the script.
+If you are so inclined, 
+you can copy `contacts.json-EXAMPLE` to `contacts.json` to save yourself a little bit of typing.
 Some of the contacts have multiple phone numbers,
 which happens for legitimate reasons in real data.
 

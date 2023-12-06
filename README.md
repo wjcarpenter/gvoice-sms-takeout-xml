@@ -54,7 +54,7 @@ I'll myself become a little hazy on the workings of the script,
 and that might add some time.
 
 When asking questions or reporting issues,
-the best evidence to give is the original HTML file that provokes the issue.
+the best evidence to give is the original data file that provokes the issue.
 The script usually names a specific file that gives it a headache.
 Sometimes the script will not know that it's misbehaving, 
 in which case you have a little detective work to do.
@@ -91,7 +91,7 @@ contact the nearest smart alecky kid and get them to help you.
 
 - Save sms.py in some convenient location. Let's call that location `/some/bin/sms.py`. 
 It is a python script that requires Python 3.
-- Use Google Takeout to download Google Voice and Google Chat messages. 
+- Use Google Takeout to download Google Voice or Google Chat messages or both. 
 That will give you a file named `takeout-`_something-something_`.zip`.
 - Unpack that ZIP file in some convenient location. Let's call that location `/someplace/t/`. 
 - The Google Voice files will be in a directory `Takeout/Voice/Calls/`, aka `/someplace/t/Takeout/Voice/Calls/`.
@@ -101,10 +101,12 @@ That will give you a file named `takeout-`_something-something_`.zip`.
 - If you get python errors, it is most likely because you are missing some of the imported modules. 
 Use `pip` to install them until python stops complaining. 
 - When the script starts running correctly, it will announce the locations of inputs and outputs and other helpful information.
-Generally, anything output lines prefixed with `>>` are just informational,
-but pay attention to any output without that prefix.
+- It can also emit warnings or TODO items.
+Generally, any output lines prefixed with `>>` are just informational,
+but pay attention to any output lines without that prefix.
 - If the script sees problems in the information, it will report them to you.
 See the information below about missing contacts.
+Don't use the resulting output files until you are satisfied you have dealt with any reported problems.
 
 ### Running a test
 If you would like to try this with some test data to get comfortable with things,
@@ -114,14 +116,14 @@ There are instructions there for how to use that test data with your own phone.
 ### Output files
 The script produces four separate output files.
 
-- an "sms" file containing a combination SMS and MMS messages based on Google Voice
+- an "sms" file containing a combination of SMS and MMS messages based on Google Voice
 (MMS messages are used for group conversations and for messages with attachments)
 - a "calls" file containing call history records
 - an "sms vm" file containing MMS messages for voicemails
 (The voicemail recording is included as an attachment.
 If there is a transcript, it is included as a text part of the MMS message.
-A voicemail also creates a missed call record in the "calls" file, without the recording or transcript.)
-- an "sms chat" file containing a combination SMS and MMS messages based on Google Chat
+A voicemail also creates a "missed call" record in the "calls" file, without the recording or transcript.)
+- an "sms chat" file containing a combination of SMS and MMS messages based on Google Chat
 
 Why is there a separate file for voicemail MMS messages?
 It's done that way in case you don't want to include those with the other SMS and MMS messages when you do the restore operation.
@@ -192,16 +194,9 @@ Relative paths in the output files are very slightly more privacy-preserving
 
 ### Missing contacts
 In the Google Takeout data, 
-there are some edge cases where it's impossible to figure out the contact phone number for a particular HTML input file.
+there are some edge cases where it's impossible to figure out the contact phone number for a particular input file.
 It's not too important for you to understand those edge cases,
 but the script works hard to deal with them.
-JSON files from Google Chat don't contain phone numbers,
-so any discovery of phone numbers comes from the HTML files from Google Voice.
-The Google Voice files are processed first, 
-so any discovered contact numbers can be used when processing the Google Chat files.
-Google Chat files contain a contact name and a contact email address.
-A phone number for either is sufficient, 
-whether configured in the JSON contacts file or discovered in the Google Voice HTML files.
 
 Two main techniques are used.
 - First, the script notices name-to-number mappings as it encounters them in HTML files, 
@@ -209,6 +204,14 @@ so it might be able to figure it out automatically.
 - Second, if the script can't figure it out automatically, 
 it emits a "TODO" message asking you to add an entry to a JSON file and re-run.
 If you don't see any TODO messages (most people will not), then the script figured everything out.
+
+JSON files from Google Chat don't contain phone numbers,
+so any discovery of phone numbers comes from the HTML files from Google Voice.
+The Google Voice files are processed first, 
+so any discovered contact numbers can be used when processing the Google Chat files.
+Google Chat files contain a contact name and a contact email address.
+A phone number for either is sufficient, 
+whether configured in the JSON contacts file or discovered in the Google Voice HTML files.
 
 If the script didn't deal with the edge cases, 
 it would be possible to see things either mapped to the number "0000000000" or without any number at all 
@@ -265,7 +268,7 @@ Contact names, including `Me`, are case-sensitive.
 Don't forget to include the `+` and the country code with the phone number
 (and no other punctuation ... just the `+` and digits). 
 The order of items in that file doesn't matter, but the python JSON parser requires a comma after each item except the final one.
-It also insists on the use of double quotes for all of the items (not single quotes).
+It also insists on the use of double quotes (not single quotes) for all of the items.
 Rerun the script until you get no TODO reports about missing contact phone numbers and no other errors.
 
 You can now use the resulting output files as a backup files to be restored with the SMS Backup and Restore app.
@@ -298,7 +301,7 @@ Depending on the the number policy (described below),
 the first number in the list can be considered "preferred".
 ### Conflicting contact names and numbers
 You might also see some informational notices about conflicting numbers for contacts.
-This can happen if one of your contacts has multiple phone numbers, 
+This can happen if one of your contacts (or you) has multiple phone numbers, 
 including having changed phone numbers over time.
 The phone number is the thing that matters in the backup files,
 so you probably don't have to do anything about these.
@@ -307,7 +310,7 @@ you could edit the HTML files to change the conflicting number to the one you pr
 If you have all of the conflicting numbers in your phone contact records,
 things will work out without your needing to do anything.
 If you don't have one of those numbers for the contact,
-then the record will show up as just the phone number and no contact name.
+then the record will show up on your phone as just the phone number and no contact name.
 
 Why can't we just take care of this?
 Well, the way things are stored on your phone is with separate
@@ -351,7 +354,7 @@ where "newest" means appearing in an HTML file with the most recent message time
 Any contact numbers mentioned in the JSON contacts file are considered to be "newer"
 than any numbers discovered in HTML files.
 If the contact name in the JSON file has multiple numbers,
-they are assumed to be listed in reverse chronologicaly order
+they are assumed to be listed in reverse chronological order
 (so the first one is the "newest" and will be used).
 - `configured`: Similar to `asis`, 
 except that only contact numbers from the JSON configuration file will be used.
@@ -359,7 +362,8 @@ Contact numbers discovered in HTML files will not be used and will generate `TOD
 
 Of the above policies, `asis` is the simplest to use.
 `configured` is the most strict, but -- along with contact number aliases -- gives the finest control.
-Here is an example of a message you might see if you use the `configured` policy but have no entry for a given contact:
+Here is an example of a message you might see if you use the `configured` policy but have no entry for a given contact.
+The number was found in an HTML file, but it's disallowed by policy.
 ```
 TODO: Missing or disallowed +phonenumber for contact: "Søren Aabye Kierkegaard": "+17323211414",
       due to File: "/home/wjc/git/gvoice-sms-takeout-xml/test_data/Takeout/Voice/Calls/Group Conversation - 2023-10-01T15_30_41Z.html"
@@ -379,6 +383,7 @@ I have mixed feelings about providing this US-centric (actually, North America c
 An alternative to this would be fixing up your Google Contacts to have phone numbers with fully formatted country codes before exporting data with Google Takeout.
 If you are in the middle of moving things with this script,
 you could use fix up your contacts and use the heuristic when converting the data.
+
 ### Dumping runtime data
 There is a command line option, `-z`, 
 to have the script dump out some internal tables at the end of the run.
@@ -389,4 +394,4 @@ It's there as an additional concise source of information if you need it.
 
 NOTE: The dumped data tends to use single quote marks.
 If you copy and paste that into the JSON contacts file, be sure to switch them to double quote marks.
-
+(It's not my fault.)
