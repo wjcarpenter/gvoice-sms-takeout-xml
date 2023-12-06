@@ -17,7 +17,7 @@ import argparse
 from operator import itemgetter
 import pprint
 
-__updated__ = "2023-12-04 14:06"
+__updated__ = "2023-12-06 14:19"
 
 sms_backup_file  = None
 call_backup_file = None
@@ -193,7 +193,7 @@ def main():
                 html_target = (subdirectory, html_basename)
                 process_one_voice_file(False, html_target)
 
-        print('>> Reading chat files under', get_aka_path(voice_directory))
+        print('>> Reading chat files under', get_aka_path(chat_directory))
         for subdirectory, __, __ in os.walk(chat_directory):
             process_one_chat_directory(me_contact_number, subdirectory)
 
@@ -207,7 +207,7 @@ def main():
 
 def process_one_chat_directory(me_contact_number, subdirectory):
     participants = process_chat_group_info(me_contact_number, subdirectory)
-    process_chat_messages(subdirectory, participants)
+    process_chat_messages(me_contact_number, subdirectory, participants)
 
 def process_chat_group_info(me_contact_number, subdirectory):
     group_info_basename = "group_info.json"
@@ -216,40 +216,40 @@ def process_chat_group_info(me_contact_number, subdirectory):
     if not os.path.exists(group_info_filename):
         return None
     
-    participants = list()
     with open(group_info_filename, "r") as fp:
         parsed_group_info = json.load(fp)
 
+    me_in_participants = False 
+    participants = list()
     for member in parsed_group_info["members"]:
         email = member["email"]
         email_number = contacts_oracle.get_number_by_name(email, None)
         name = member["name"]
         name_number = contacts_oracle.get_number_by_name(name, None)
-        if (not email_number and email not in missing_contacts) and (not name_number and name not in missing_contacts):
-            print()
-            print(f'TODO:     Missing or disallowed +phonenumber for contact: "{name}": "+",')
-            print(f'TODO: and Missing or disallowed +phonenumber for contact: "{email}": "+",')
-            print(f'      due to File: "{get_abs_path(json_target)}"')
-            counters['todo_errors'] += 1
-            missing_contacts.add(name)
-            missing_contacts.add(email)
+        if not email_number and not name_number:
+            if email not in missing_contacts or name not in missing_contacts:
+                print()
+                print(f'TODO:     Missing or disallowed +phonenumber for contact: "{name}": "+",')
+                print(f'TODO: and Missing or disallowed +phonenumber for contact: "{email}": "+",')
+                print(f'      due to File: "{get_abs_path(json_target)}"')
+                counters['todo_errors'] += 1
+                missing_contacts.add(name)
+                missing_contacts.add(email)
         else:
             if email_number and name_number and email_number != name_number:
                 print(f'>> Info: conflicting information for email {email}: {email_number} versus name {name}: {name_number}. Using {name_number}.')
                 print(f'>>    due to File: "{get_abs_path(json_target)}"')
             else:
                 if name_number:
-                    participants.append(name_number)
+                    if contacts_oracle.is_me_number(name_number):
+                        me_in_participants = True
+                    else:
+                        participants.append(name_number)
                 else:
-                    participants.append(email_number)
-    me_in_participants = True 
-    if participants and not me_contact_number in participants:
-        me_in_participants = False 
-        for particpant in participants:
-            names = contacts_oracle.get_names_by_number(particpant)
-            if names and 'Me' in names:
-                me_in_participants = True
-                break
+                    if contacts_oracle.is_me_number(email_number):
+                        me_in_participants = True
+                    else:
+                        participants.append(email_number)
             
     if not me_in_participants:            
         print(f'>> Info: Chat participants list does not include the "Me" phone number {me_contact_number}: {participants}')
@@ -257,9 +257,72 @@ def process_chat_group_info(me_contact_number, subdirectory):
         
     return participants
 
-def process_chat_messages(subdirectory, participants):
-    messages_filename = os.path.join(subdirectory, "messages.json")
-    pass
+def process_chat_messages(me_contact_number, subdirectory, participants):
+    messages_basename = "messages.json"
+    messages_filename = os.path.join(subdirectory, messages_basename)
+    json_target = (subdirectory, messages_basename)
+    if not os.path.exists(messages_filename):
+        return None
+    
+    with open(messages_filename, "r") as fp:
+        parsed_messages = json.load(fp)
+        
+    attachment_collisions = dict()
+    message_list = parsed_messages['messages']
+    for message in message_list:
+        creator = message['creator']
+        name = creator['name']
+        sender_number = contacts_oracle.get_number_by_name(name, None)
+        if not sender_number:
+            email = creator['email']
+            sender_number = contacts_oracle.get_number_by_name(email, None)
+        created_date = message['created_date']
+        text = message.get('text', None)
+        attachment_list = list()  # a list of tuples
+        attachments = message.get('attached_files', None)
+        if attachments:
+            for attachment in attachments:
+                original_name = attachment['original_name']
+                export_name = attachment['export_name']
+                # undocumented fact, probably due to windows, not sure if all of these are treated this way
+                export_name =  re.sub(r'[%?<>"|*/\\:]', '_', export_name)
+                export_name_count = attachment_collisions.get(export_name, None)
+                root, ext = os.path.splitext(export_name)
+                root = root[:47] # another undocumented fact
+                if export_name_count is not None:
+                    export_name_count += 1
+                    export_name_revised = f'{root}({int(export_name_count)}){ext}'
+                else:
+                    export_name_count = 0
+                    export_name_revised = f'{root}{ext}'
+                attachment_collisions[export_name] = export_name_count
+                export_path_revised = os.path.join(subdirectory, export_name_revised)
+                attachment_list.append((original_name, export_path_revised))
+        write_message_for_chat(json_target, me_contact_number, sender_number, participants, created_date, text, attachment_list)
+
+def write_message_for_chat(json_target, me_contact_number, sender_number, participants, created_date, the_text, attachment_list):
+    name_list = contacts_oracle.get_names_by_number(sender_number)
+    sent_by_me = (me_contact_number == sender_number)
+    if sent_by_me:
+        message_type = '2'
+    else:
+        message_type = '1'
+    timestamp = unix_time_ms_from_datetime(datetime_from_string(created_date))
+    #attachment_elts = get_attachment_elts(message_elt)
+    parent_elt = BeautifulSoup()
+    parent_elt.append(bs4_get_file_comment(json_target))
+    # if it was just an attachment with no text, there is no point in creating an empty SMS to go with it
+    if the_text and not attachment_list and len(participants) == 1:
+        for other_party_number in participants:
+            if other_party_number != me_contact_number:
+                break
+        bs4_append_sms_elt(parent_elt, other_party_number, timestamp, the_text, message_type)
+    else:
+        msgbox_type = message_type
+        bs4_append_mms_elt_with_parts_for_chat(parent_elt, json_target, attachment_list, the_text, sender_number, sent_by_me, timestamp, msgbox_type, participants)
+    chat_backup_file.write(parent_elt.prettify())
+    chat_backup_file.write('\n')
+    counters['number_of_chat_sms_output'] += 1
 
 def process_one_voice_file(is_first_pass, html_target):
     global html_elt
@@ -331,7 +394,7 @@ def process_call_from_html_file(html_target, call_type):
     published_elt = html_elt.body.find(class_="published")
     readable_date = published_elt.get_text().replace("\r"," ").replace("\n"," ")
     iso_date = published_elt.attrs['title']
-    timestamp = get_time_unix(html_elt.body)
+    timestamp = get_time_unix_ms(html_elt.body)
     duration_elt = html_elt.find(class_="duration")
     if not duration_elt:
         duration = 0
@@ -396,7 +459,7 @@ def write_sms_messages(html_target, message_elts):
         the_text = get_message_text(message_elt)
         message_type = get_message_type(message_elt)
         sent_by_me = (message_type == 2)
-        timestamp = get_time_unix(message_elt)
+        timestamp = get_time_unix_ms(message_elt)
         attachment_elts = get_attachment_elts(message_elt)
         parent_elt = BeautifulSoup()
         parent_elt.append(bs4_get_file_comment(html_target))
@@ -405,7 +468,7 @@ def write_sms_messages(html_target, message_elts):
             bs4_append_sms_elt(parent_elt, other_party_number, timestamp, the_text, message_type)
         else:
             msgbox_type = message_type
-            bs4_append_mms_elt_with_parts(parent_elt, html_target, attachment_elts, the_text, other_party_number, sent_by_me, timestamp, msgbox_type, [other_party_number])
+            bs4_append_mms_elt_with_parts_for_voice(parent_elt, html_target, attachment_elts, the_text, other_party_number, sent_by_me, timestamp, msgbox_type, [other_party_number])
         sms_backup_file.write(parent_elt.prettify())
         sms_backup_file.write('\n')
         counters['number_of_voice_sms_output'] += 1
@@ -430,7 +493,7 @@ def write_mms_message_for_vm(html_target):
                 break
 
     participants = [sender] if sender else [BOGUS_NUMBER]
-    timestamp = get_time_unix(body_elt)
+    timestamp = get_time_unix_ms(body_elt)
     vm_from = (sender_name if sender_name else sender if sender else "Unknown")
     transcript = get_vm_transcript(body_elt)
     if transcript:
@@ -442,7 +505,7 @@ def write_mms_message_for_vm(html_target):
     sent_by_me = False
     parent_elt = BeautifulSoup()
     parent_elt.append(bs4_get_file_comment(html_target))
-    bs4_append_mms_elt_with_parts(parent_elt, html_target, attachment_elts, the_text, sender, sent_by_me, timestamp, msgbox_type, participants)
+    bs4_append_mms_elt_with_parts_for_voice(parent_elt, html_target, attachment_elts, the_text, sender, sent_by_me, timestamp, msgbox_type, participants)
     vm_backup_file.write(parent_elt.prettify())
     vm_backup_file.write('\n')
     counters['number_of_vms_output'] += 1
@@ -457,12 +520,12 @@ def write_mms_messages(html_target, participants_elt, message_elts):
         sent_by_me = sender not in participants
         the_text = get_message_text(message_elt)
         message_type = get_message_type(message_elt)
-        timestamp = get_time_unix(message_elt)
+        timestamp = get_time_unix_ms(message_elt)
         attachment_elts = get_attachment_elts(message_elt)
 
         parent_elt = BeautifulSoup()
         parent_elt.append(bs4_get_file_comment(html_target))
-        bs4_append_mms_elt_with_parts(parent_elt, html_target, attachment_elts, the_text, sender, sent_by_me, timestamp, None, participants)
+        bs4_append_mms_elt_with_parts_for_voice(parent_elt, html_target, attachment_elts, the_text, sender, sent_by_me, timestamp, None, participants)
         sms_backup_file.write(parent_elt.prettify())
         sms_backup_file.write('\n')
         counters['number_of_voice_sms_output'] += 1
@@ -515,7 +578,7 @@ def bs4_append_sms_elt(parent_elt, sender, timestamp, the_text, message_type):
     # readable_date - Optional field that has the date in a human readable format.
     # contact_name - Optional field that has the name of the contact.
 
-def bs4_append_mms_elt_with_parts(parent_elt, html_target, attachment_elts, the_text, other_party_number, sent_by_me, timestamp, msgbox_type, participants):
+def bs4_append_mms_elt_with_parts_for_voice(parent_elt, html_target, attachment_elts, the_text, other_party_number, sent_by_me, timestamp, msgbox_type, participants):
     m_type = 128 if sent_by_me else 132
     bs4_append_mms_elt(parent_elt, participants, timestamp, m_type, msgbox_type, other_party_number, sent_by_me, the_text)
     mms_elt = parent_elt.mms
@@ -546,7 +609,10 @@ def bs4_append_mms_elt(parent_elt, participants, timestamp, m_type, msgbox_type,
     mms_elt.append(parts_elt)
     bs4_append_text_part_elt(parts_elt, the_text)
     
-    participants_tilde = '~'.join(participants)
+    if participants:
+        participants_tilde = '~'.join(participants)
+    else:
+        participants_tilde = BOGUS_NUMBER        
     # address - The phone number of the sender/recipient.
     mms_elt['address'] = participants_tilde
     # ct_t - The Content-Type of the message, usually "application/vnd.wap.multipart.related"
@@ -605,8 +671,8 @@ def bs4_append_part_elt(parent_elt, attachment_type, sequence_number, html_targe
     attachment_filename, content_type = figure_out_attachment_filename_and_type(attachment_type, html_target, attachment_file_ref)
     subdirectory, __ = html_target
     if attachment_filename:
-        attachment_filename_rel_path = get_rel_path((subdirectory, attachment_filename))
-        with open(attachment_filename_rel_path, 'rb') as attachment_file: 
+        export_path_revised = get_rel_path((subdirectory, attachment_filename))
+        with open(export_path_revised, 'rb') as attachment_file: 
             attachment_data = base64.b64encode(attachment_file.read()).decode()
         parent_elt.append(bs4_get_file_comment((subdirectory, attachment_filename)))
         part_elt = html_elt.new_tag('part')
@@ -632,6 +698,63 @@ def bs4_append_part_elt(parent_elt, attachment_type, sequence_number, html_targe
         part_elt['cl'] = attachment_filename
         # data - The base64 encoded binary content of the part.
         part_elt['data'] = attachment_data
+
+# a somewhat arbitrary collection of content types; I did not encounter all of these
+ext_to_content_type = {
+    ".jpg":   "image/jpeg",
+    ".jpeg":  "image/jpeg",
+    ".png":   "image/png",
+    ".gif":   "image/gif",
+    ".webp":  "image/webp",
+    ".svg":   "image/svg+xml",
+    ".wav":   "audio/wav",
+    ".ogg":   "audio/ogg",
+    ".mp3":   "audio/mp3",
+    ".mov":   "video/quicktime",
+    ".mpg":   "video/mpeg",
+    ".mp4":   "video/mpeg4",
+    ".vcf":   "text/x-vCard"
+    }
+
+def bs4_append_mms_elt_with_parts_for_chat(parent_elt, json_target, attachment_list, the_text, sender_number, sent_by_me, timestamp, msgbox_type, participants):
+    m_type = 128 if sent_by_me else 132
+    bs4_append_mms_elt(parent_elt, participants, timestamp, m_type, msgbox_type, sender_number, sent_by_me, the_text)
+    mms_elt = parent_elt.mms
+    if attachment_list:
+        parts_elt = mms_elt.parts
+        sequence_number = 0
+        for original_name, export_path_revised in attachment_list:
+            sequence_number += 1
+            __, ext = os.path.splitext(original_name)
+            content_type = ext_to_content_type.get(ext, 'application/octet-stream')
+            # bs4_append_part_elt(parts_elt, ATTACHMENT_TYPE_IMAGE, sequence_number, html_target, attachment_file_ref)
+            with open(export_path_revised, 'rb') as attachment_file: 
+                attachment_data = base64.b64encode(attachment_file.read()).decode()
+            subdirectory, export_name = os.path.split(export_path_revised)
+            parts_elt.append(bs4_get_file_comment((subdirectory, export_name)))
+            part_elt = html_elt.new_tag('part')
+            parts_elt.append(part_elt)
+
+            # seq - The order of the part.
+            part_elt['seq'] = sequence_number
+            # ct - The content type of the part.
+            part_elt['ct'] = content_type
+            # name - The name of the part.
+            part_elt['name'] = original_name
+            # chset - The charset of the part.
+            part_elt['chset'] = 'null'
+            part_elt['cd'] = 'null'
+            part_elt['fn'] = 'null'
+            part_elt['cid'] = '<0>'
+            part_elt['ctt_s'] = 'null'
+            part_elt['ctt_t'] = 'null'
+            # text - The text content of the part.
+            part_elt['text'] = 'null'
+            part_elt['sef_type'] = '0'
+            # cl - The content location of the part.
+            part_elt['cl'] = export_name
+            # data - The base64 encoded binary content of the part.
+            part_elt['data'] = attachment_data
 
 def bs4_append_addrs_elt(elt_parent, participants, other_party_number, sent_by_me):
     addrs_elt = html_elt.new_tag('addrs')
@@ -781,7 +904,7 @@ def get_mms_participant_phone_numbers(html_target, participants_elt):
         phone_number = format_number(html_target, raw_number)
         participants.append(format_number(html_target, phone_number))
 
-    if participants == []:
+    if not participants:
         # The filename for an MMS is just "Group Conversation", which is worthless for here.
         if phone_number_from_html_title is None:
             phone_number_from_html_title = contact_name_to_number(contact_name_from_html_title)
@@ -810,17 +933,25 @@ def is_phone_number(value):
         return match_phone_number.group(1)
     return None 
 
-def get_time_unix(message):
+def datetime_from_string(string):
+    return dateutil.parser.parse(string)
+
+def unix_time_ms_from_datetime(datetime):
+    utc_offset_millis = datetime.utcoffset().total_seconds() * 1000
+    # timegm() doesn't take the TZ into account, so we have to adjust it manually
+    timegm_millis = timegm(datetime.timetuple()) * 1000
+    unix_epoch_time_ms = timegm_millis - utc_offset_millis
+    return int(unix_epoch_time_ms)
+    
+
+def get_time_unix_ms(message):
     time_elt = message.find(class_='dt')
     if not time_elt:
         time_elt = message.find(class_='published')
     iso_time = time_elt['title']
-    parsed_iso_time = dateutil.parser.isoparse(iso_time);
-    utc_offset_millis = parsed_iso_time.utcoffset().total_seconds() * 1000
-    # timegm() doesn't take the TZ into account, so we have to adjust it manually
-    timegm_millis = timegm(parsed_iso_time.timetuple()) * 1000
-    unix_epoch_time_millis = timegm_millis - utc_offset_millis
-    return int(unix_epoch_time_millis)
+    #parsed_iso_time = dateutil.parser.isoparse(iso_time)
+    parsed_iso_time = datetime_from_string(iso_time)
+    return unix_time_ms_from_datetime(parsed_iso_time)
 
 def unix_to_iso_time(unix_time_seconds):
     dt = datetime.datetime.fromtimestamp(unix_time_seconds, datetime.timezone.utc)
@@ -1015,7 +1146,7 @@ def scan_vcards_for_contacts(html_target, parent_elt):
     # We make the simplifying assumption that the timestamps in any given HTML file
     # are close (enough) together and it doesn't matter much which one we use for
     # the contact timestamp. We also ignore milliseconds.
-    timestamp = get_time_unix(parent_elt) / 1000
+    timestamp = get_time_unix_ms(parent_elt) / 1000
     
     vcard_elts = parent_elt.find_all(class_="vcard")
     for vcard_elt in vcard_elts:
@@ -1151,6 +1282,12 @@ class ContactsOracle:
             if this_number == number:
                 return True
         return False
+        
+    def is_me_number(self, number):
+        names = self._number_to_names.get(number, None)
+        if not names:
+            return False
+        return 'Me' in names
         
     # This is really inefficient, but we're banking on the set of contacts being managable
     def add_discovered_contact(self, name, number, timestamp):
