@@ -1,6 +1,8 @@
 # gvoice-sms-takeout-xml
 Convert Google Voice data and Google Chat data from Google Takeout to XML files suitable for use with SMS Backup and Restore.
 Find this code repository at <https://github.com/wjcarpenter/gvoice-sms-takeout-xml>.
+For a more detailed and user-friendly explanation of how to use this, see
+<https://www.instructables.com/HOWTO-Moving-From-Google-Voice-GV-to-Google-Messag/>.
 
 Google Takeout, 
 <https://takeout.google.com>,
