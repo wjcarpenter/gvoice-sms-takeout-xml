@@ -1,4 +1,6 @@
 from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
+from bs4.dammit import EntitySubstitution
+from bs4.formatter import XMLFormatter
 import warnings
 warnings.filterwarnings('ignore', category=MarkupResemblesLocatorWarning)
 from bs4.element import Comment
@@ -10,19 +12,20 @@ import dateutil.parser
 import datetime
 from calendar import timegm
 import base64
-from io import open
+from io import open, TextIOBase
 import json
 import isodate
 import argparse
 from operator import itemgetter
 import pprint
+from typing import Optional
 
 __updated__ = "2023-12-06 14:19"
 
-sms_backup_file  = None
-call_backup_file = None
-vm_backup_file   = None
-chat_backup_file = None
+sms_backup_file: Optional[TextIOBase]  = None
+call_backup_file: Optional[TextIOBase] = None
+vm_backup_file: Optional[TextIOBase]   = None
+chat_backup_file: Optional[TextIOBase] = None
 takeout_voice_directory = os.path.join('Voice', 'Calls')
 takeout_chat_directory = os.path.join('Google Chat', 'Groups')
 
@@ -42,11 +45,10 @@ takeout_chat_directory = os.path.join('Google Chat', 'Groups')
 #   acceptable: listed numbers as-is, all others swapped with preferred
 
 
-contacts_oracle = None
-
 # this is for some internal bookkeeping; you don't need to do anything with it.
 missing_contacts = set()
 conflicting_contacts = dict()
+files_used = set()
 
 # some global counters for a stats summary at the end
 counters = {
@@ -64,7 +66,7 @@ phone_number_from_filename = None
 contact_name_from_filename = None
 phone_number_from_html_title = None
 contact_name_from_html_title = None
-html_elt = None
+html_elt: Optional[BeautifulSoup] = None
 
 # This number is used a couple of places where we can't figure out the real number.
 # If you want to manually fix things up, you should be able to easily search for it in
@@ -73,11 +75,273 @@ BOGUS_NUMBER = "0000000000"
 
 ATTACHMENT_TYPE_IMAGE = "image"
 ATTACHMENT_TYPE_AUDIO = "audio"
+ATTACHMENT_TYPE_VIDEO = "video"
 ATTACHMENT_TYPE_VCARD = "vcard"
 
 POLICY_ASIS = "asis"
 POLICY_NEWEST = "newest"
 POLICY_CONFIGURED = "configured"
+
+FORMATTER = XMLFormatter(entity_substitution=EntitySubstitution.substitute_xml_containing_entities)
+
+# The (optional) contacts file can have these types of entries:
+# 1. some name: some other name          (this is a simple aliasing scheme for contact names)
+# 2. some name: some number              (a degenerate case that is turned into a list)
+# 3. some name: [some list of numbers]   (all of these numbers are acceptable for this contact name; leftmost is preferred)
+# 4. some number: some other number      (if some number is seen, some other number will be used in output)
+class ContactsOracle:
+    def __init__(self, contacts_filename, policy, nanp_heuritics):
+        self._contacts_filename = contacts_filename
+        self._name_to_name = dict()
+        self._number_to_number = dict()
+        self._name_to_numbers = dict()
+        self._number_to_names = dict()
+        self._policy = policy
+        self._nanp_heuristics = nanp_heuritics
+
+        if not os.path.exists(self._contacts_filename):
+            print('>> No (optional) JSON contacts file', os.path.abspath(self._contacts_filename))
+            return
+
+        print('>> Reading contacts from JSON contacts file', os.path.abspath(self._contacts_filename))
+        with open(self._contacts_filename) as fp:
+            parsed_file = json.load(fp)
+        for key, value in parsed_file.items():
+            if is_phone_number(key):
+                self._do_number_entry(key, value)
+            else:
+                self._do_name_entry(key, value)
+
+        print(">> JSON contact configuration counts:")
+        print(f'>> {len(self._name_to_numbers):6} Name-to-number(s) entries')
+        print(f'>> {len(self._name_to_name):6} Name-to-name entries')
+        print(f'>> {len(self._number_to_number):6} Number-to-number entries')
+        print(f'>> {len(self._number_to_names):6} Number-to-names entries (computed)')
+        print(f">> Contact phone number replacement policy is '{self._policy}'")
+
+    def _do_name_entry(self, name, value):
+        if isinstance(value, str):
+            if not is_phone_number(value):
+                # not mapping to a number, so must be an alias
+                self._name_to_name[name] = value
+                return
+            values = [value]  # simple scalar; make it a list
+        elif isinstance(value, list):
+            values = value
+        else:
+            raise Exception(
+                f'"{name}" entry value of type {type(value)} is not a string or a list: {value}\n    in {get_aka_path(self._contacts_filename)}')
+
+        far_future = 2_000_000_000  # a pseudo-Unix timestamp, in seconds, in the distant future
+        for ii in range(len(values)):
+            value = values[ii]
+            if not is_phone_number(value):
+                raise Exception(
+                    f'"{name}" entry value of type {type(value)} is not a phone number: {value}\n    in {get_aka_path(self._contacts_filename)}')
+            # (value, timestamp, isconfigured)
+            value = self.apply_nanp_heuristics(value)
+            far_future_iso = unix_to_iso_time(far_future - ii)
+            timestamped_number = (value, far_future_iso, True)
+            values[ii] = timestamped_number
+            self._add_number_to_name_item(name, value)
+        # these are already reverse sorted; just belt and suspenders
+        values.sort(key=itemgetter(1), reverse=True)
+        self._name_to_numbers[name] = values
+
+    def _add_number_to_name_item(self, name, number):
+        number = self.apply_nanp_heuristics(number)
+        existing = self._number_to_names.get(number, None)
+        if not existing:
+            existing = set()
+            self._number_to_names[number] = existing
+        existing.add(name)  # it's a set, so we don't care if it's duplicate
+
+    def _do_number_entry(self, number, name):
+        if not isinstance(name, str) or not is_phone_number(name):
+            raise Exception(
+                f'"{number}" entry value of type {type(name)} is not a phone number: {name}\n    in {get_aka_path(self._contacts_filename)}')
+        number = self.apply_nanp_heuristics(number)
+        self._number_to_number[name] = number
+
+    def is_already_known_pair(self, name, number):
+        if not name or not number:
+            return False
+        number = self.apply_nanp_heuristics(number)
+        existing_list = self._name_to_numbers.get(name, None)
+        if not existing_list:
+            alias_to = self._name_to_name.get(name, None)
+            return self.is_already_known_pair(alias_to, number)
+        for list_item in existing_list:
+            this_number = list_item[0]
+            if this_number == number:
+                return True
+        return False
+
+    def is_me_number(self, number):
+        names = self._number_to_names.get(number, None)
+        if not names:
+            return False
+        return 'Me' in names
+
+    # This is really inefficient, but we're banking on the set of contacts being managable
+    def add_discovered_contact(self, name, number, timestamp):
+        # We could ignore any discovered contacts for policy "configured", but we want to
+        # do proper countihg and give messages to the user, etc.
+        if is_phone_number(name):
+            # it's a number that pairs with itself instead of a name, so ignore it.
+            return False
+        number = self.apply_nanp_heuristics(number)
+        existing_list = self._name_to_numbers.get(name, None)
+        if not existing_list:
+            existing_list = list()
+            self._name_to_numbers[name] = existing_list
+        found_it = False
+        # (value, timestamp, isconfigured)
+        iso_timestamp = unix_to_iso_time(timestamp)
+        new_tuple = (number, iso_timestamp, False)
+        for ii in range(len(existing_list)):
+            this_tuple = existing_list[ii]
+            this_number, this_timestamp, this_isconfigured = this_tuple
+            if this_number == number:
+                found_it = True
+                if iso_timestamp > this_timestamp:
+                    # it's a newer discovery
+                    # we only want to update discovered items, but the timestamps of the configured items
+                    # will already deal with that because configured timestamps are artificially far future
+                    existing_list[ii] = new_tuple
+                break
+
+        if not found_it:
+            existing_list.append(new_tuple)
+            self._add_number_to_name_item(name, number)
+
+        existing_list.sort(key=itemgetter(1), reverse=True)
+
+        return not found_it
+
+    # The strategy for this method and the next is to first do a lookup by the
+    # passed in key. If that doesn't yield a result, see if the key is an
+    # alias and try again with the pointed-to key. We'll eventually get a hit
+    # or reach the end of the chain.
+    # The argument "number" is typically None, but if it does have a value
+    # we'll see if we can do better, where "better" is according to policy.
+    def get_number_by_name(self, name, number):
+        if not name:                            return number  # only happens by recursion
+        number = self.apply_nanp_heuristics(number)
+        if self._policy == POLICY_ASIS:
+            return self._policy_asis(name, number)
+        elif self._policy == POLICY_CONFIGURED:
+            return self._policy_configured(name, number)
+        elif self._policy == POLICY_NEWEST:
+            return self._policy_newest(name)
+        else:
+            raise Exception(
+                f'We don''t recognize this number policy: "{self._policy}". It''s probably a bug in the script.')
+
+    def _policy_asis(self, name, number):
+        if number:
+            return number
+        else:
+            try:
+                self._policy = POLICY_NEWEST
+                return self.get_number_by_name(name, number)
+            finally:
+                self._policy = POLICY_ASIS
+
+    def _policy_newest(self, name):
+        candidate_list = self._name_to_numbers.get(name, None)
+        if candidate_list:
+            # candidate_list will be a list with the first item the preferred number
+            this_number, this_timestamp, this_isconfigured = candidate_list[0]
+            return this_number
+        else:
+            aliased_to = self._name_to_name.get(name, None)
+            return self.get_number_by_name(aliased_to, None)
+
+    def _policy_configured(self, name, number):
+        value = None
+        candidate_list = self._name_to_numbers.get(name, None)
+        if candidate_list:
+            # if no candidate number was passed in, return the best configured number
+            if not number:
+                this_number, this_timestamp, this_isconfigured = candidate_list[0]
+                if this_isconfigured:
+                    value = this_number
+            else:
+                # a number was passed in, so vet it
+                for this_number, this_timestamp, this_isconfigured in candidate_list:
+                    if this_isconfigured and number == this_number:
+                        value = this_number
+                        break
+
+        if value:
+            return value
+        else:
+            aliased_to = self._name_to_name.get(name, None)
+            return self.get_number_by_name(aliased_to, None)
+
+    def get_names_by_number(self, number):
+        if not number:
+            return None
+        number = self.apply_nanp_heuristics(number)
+        value = self._number_to_names.get(number, None)
+        if value:
+            return value
+
+        return self.get_names_by_number(self._number_to_number.get(number, None))
+
+    def get_best_number(self, number):
+        number = self.apply_nanp_heuristics(number)
+        if self._policy == POLICY_ASIS:
+            return number
+        best_timestamp = '0000'
+        best_number = None
+        names = self.get_names_by_number(number)
+        if names:
+            for name in names:
+                # iterate over all the names, choosing the latest timestamp from among all of them
+                tuples = self._name_to_numbers.get(name, None)
+                if tuples:
+                    this_number, this_timestamp, this_isconfigured = tuples[0]
+                    if self._policy == POLICY_CONFIGURED and not this_isconfigured:
+                        continue
+                    if this_timestamp > best_timestamp:
+                        best_timestamp = this_timestamp
+                        best_number = this_number
+            if best_number:
+                return best_number
+        else:
+            return number
+
+    def apply_nanp_heuristics(self, number):
+        if not self._nanp_heuristics or not number:
+            return number
+
+        if len(number) == 10 and not number.startswith('1'):
+            return '+1' + number
+        elif len(number) == 11 and number.startswith('1'):
+            return '+' + number
+        else:
+            # This is unlikely to work out
+            return number
+
+    def dump(self):
+        pp = pprint.PrettyPrinter(indent=2, width=132)
+        print()
+        print("Mappings of names-to-numbers (configured True, discovered False):")
+        pp.pprint(self._name_to_numbers)
+        print()
+        print("Mappings of numbers-to-names (computed reverse mappings)")
+        pp.pprint(self._number_to_names)
+        print()
+        print("Mappings of names-to-names (configured name aliases):")
+        pp.pprint(self._name_to_name)
+        print()
+        print("Mappings of numbers-to-numbers (configured number aliases):")
+        pp.pprint(self._number_to_number)
+
+contacts_oracle: Optional[ContactsOracle] = None
+
 # My convention is to use a relative filename when emitting into the XML
 # and an absolute filename when printing a message for the person running the script.
 
@@ -169,10 +433,10 @@ def main():
             html_target = (subdirectory, html_basename)
             process_one_voice_file(True, html_target)
 
-    with (open(sms_backup_filename,  'w') as sms_backup_file, 
-          open(vm_backup_filename,   'w') as vm_backup_file, 
-          open(call_backup_filename, 'w') as call_backup_file,
-          open(chat_backup_filename, 'w') as chat_backup_file):
+    with (open(sms_backup_filename,  'w', encoding='utf-8', newline='\n') as sms_backup_file,
+          open(vm_backup_filename,   'w', encoding='utf-8', newline='\n') as vm_backup_file,
+          open(call_backup_filename, 'w', encoding='utf-8', newline='\n') as call_backup_file,
+          open(chat_backup_filename, 'w', encoding='utf-8', newline='\n') as chat_backup_file):
         
         write_dummy_headers()
         
@@ -204,6 +468,11 @@ def main():
     print_counters(contacts_filename, sms_backup_filename, vm_backup_filename, call_backup_filename, chat_backup_filename)
     if dump_data:
         contacts_oracle.dump()
+
+    for subdirectory, __, files in os.walk(voice_directory):
+        for basename in files:
+            if get_rel_path((subdirectory, basename)) not in files_used:
+                print(f"Warning: {get_rel_path((subdirectory, basename))} was not used")
 
 def process_one_chat_directory(me_contact_number, subdirectory):
     participants = process_chat_group_info(me_contact_number, subdirectory)
@@ -320,7 +589,7 @@ def write_message_for_chat(json_target, me_contact_number, sender_number, partic
     else:
         msgbox_type = message_type
         bs4_append_mms_elt_with_parts_for_chat(parent_elt, json_target, attachment_list, the_text, sender_number, sent_by_me, timestamp, msgbox_type, participants)
-    chat_backup_file.write(parent_elt.prettify())
+    chat_backup_file.write(parent_elt.prettify(formatter=FORMATTER))
     chat_backup_file.write('\n')
     counters['number_of_chat_sms_output'] += 1
 
@@ -436,7 +705,7 @@ def write_call_message(html_target, telephone_number, presentation, duration, ti
     parent_elt = BeautifulSoup()
     parent_elt.append(bs4_get_file_comment(html_target))
     bs4_append_call_elt(parent_elt, telephone_number, duration, timestamp, presentation, readable_date, call_type)
-    call_backup_file.write(parent_elt.prettify())
+    call_backup_file.write(parent_elt.prettify(formatter=FORMATTER))
     call_backup_file.write('\n')
     counters['number_of_calls_output'] += 1
 
@@ -469,7 +738,7 @@ def write_sms_messages(html_target, message_elts):
         else:
             msgbox_type = message_type
             bs4_append_mms_elt_with_parts_for_voice(parent_elt, html_target, attachment_elts, the_text, other_party_number, sent_by_me, timestamp, msgbox_type, [other_party_number])
-        sms_backup_file.write(parent_elt.prettify())
+        sms_backup_file.write(parent_elt.prettify(formatter=FORMATTER))
         sms_backup_file.write('\n')
         counters['number_of_voice_sms_output'] += 1
 
@@ -506,7 +775,7 @@ def write_mms_message_for_vm(html_target):
     parent_elt = BeautifulSoup()
     parent_elt.append(bs4_get_file_comment(html_target))
     bs4_append_mms_elt_with_parts_for_voice(parent_elt, html_target, attachment_elts, the_text, sender, sent_by_me, timestamp, msgbox_type, participants)
-    vm_backup_file.write(parent_elt.prettify())
+    vm_backup_file.write(parent_elt.prettify(formatter=FORMATTER))
     vm_backup_file.write('\n')
     counters['number_of_vms_output'] += 1
 
@@ -525,8 +794,8 @@ def write_mms_messages(html_target, participants_elt, message_elts):
 
         parent_elt = BeautifulSoup()
         parent_elt.append(bs4_get_file_comment(html_target))
-        bs4_append_mms_elt_with_parts_for_voice(parent_elt, html_target, attachment_elts, the_text, sender, sent_by_me, timestamp, None, participants)
-        sms_backup_file.write(parent_elt.prettify())
+        bs4_append_mms_elt_with_parts_for_voice(parent_elt, html_target, attachment_elts, the_text, sender, sent_by_me, timestamp, message_type, participants)
+        sms_backup_file.write(parent_elt.prettify(formatter=FORMATTER))
         sms_backup_file.write('\n')
         counters['number_of_voice_sms_output'] += 1
 
@@ -540,6 +809,9 @@ def get_attachment_elts(message_elt):
         audio_elt = div_elt.find('audio')
         if audio_elt:
             attachment_elts.append(audio_elt)
+        video_elt = div_elt.find(class_='video')
+        if video_elt:
+            attachment_elts.append(video_elt)
         vcard_elt = div_elt.find(class_='vcard')
         # distinguish between a vCard that is attached vs a vcard element that is just info from Takeout
         if vcard_elt and vcard_elt.name == "a":
@@ -571,10 +843,11 @@ def bs4_append_sms_elt(parent_elt, sender, timestamp, the_text, message_type):
     # read - Read Message = 1, Unread Message = 0.
     sms_elt['read'] = '1'
     # status - None = -1, Complete = 0, Pending = 32, Failed = 64.
-    sms_elt['status'] = '1'
+    sms_elt['status'] = '-1'
     sms_elt['locked'] = '0'
 
     # sub_id - Optional field that has the id of the phone subscription (SIM).
+    sms_elt['sub_id'] = '-1'
     # readable_date - Optional field that has the date in a human readable format.
     # contact_name - Optional field that has the name of the contact.
 
@@ -590,8 +863,11 @@ def bs4_append_mms_elt_with_parts_for_voice(parent_elt, html_target, attachment_
                 attachment_file_ref = attachment_elt['src']
                 bs4_append_part_elt(parts_elt, ATTACHMENT_TYPE_IMAGE, sequence_number, html_target, attachment_file_ref)
             elif attachment_elt.name == 'audio':
-                attachment_file_ref = attachment_elt.a['href']
+                attachment_file_ref = attachment_elt.get('src', None) or attachment_elt.a['href']
                 bs4_append_part_elt(parts_elt, ATTACHMENT_TYPE_AUDIO, sequence_number, html_target, attachment_file_ref)
+            elif attachment_elt.name == 'a' and 'video' in attachment_elt['class']:
+                attachment_file_ref = attachment_elt['href']
+                bs4_append_part_elt(parts_elt, ATTACHMENT_TYPE_VIDEO, sequence_number, html_target, attachment_file_ref)
             elif attachment_elt.name == 'a' and 'vcard' in attachment_elt['class']:
                 attachment_file_ref = attachment_elt['href']
                 bs4_append_part_elt(parts_elt, ATTACHMENT_TYPE_VCARD, sequence_number, html_target, attachment_file_ref)
@@ -626,7 +902,7 @@ def bs4_append_mms_elt(parent_elt, participants, timestamp, m_type, msgbox_type,
     # read - Has the message been read
     mms_elt['read'] = '1'
     # rr - The read-report of the message.
-    mms_elt['rr'] = '129'
+    mms_elt['rr'] = 'null'
     mms_elt['seen'] = '1'
     mms_elt['sub_id'] = '-1'
     mms_elt['text_only'] = '0'
@@ -641,7 +917,7 @@ def bs4_append_mms_elt(parent_elt, participants, timestamp, m_type, msgbox_type,
     return parent_elt
 
 def bs4_append_text_part_elt(elt_parent, the_text):
-    if not the_text or the_text == "MMS Sent":
+    if not the_text or the_text == "MMS Sent" or the_text == "MMS Received":
         return  # don't bother with this trivial text part 
 
     text_part_elt = html_elt.new_tag('part')
@@ -774,7 +1050,7 @@ def bs4_append_addrs_elt(elt_parent, participants, other_party_number, sent_by_m
         # charset - Character set of this entry
         addr_elt['charset'] = '106'
         # type - The type of address, 129 = BCC, 130 = CC, 151 = To, 137 = From
-        addr_elt['type'] = 137 if participant_is_sender else 151
+        addr_elt['type'] = '137' if participant_is_sender else '151'
 
         addrs_elt.append(addr_elt)
 
@@ -799,34 +1075,42 @@ def bs4_append_call_elt(parent_elt, telephone_number, duration, timestamp, prese
     parent_elt.append(call_elt)
 
 def bs4_get_file_comment(file_target):
+    files_used.add(get_rel_path(file_target))
     return Comment(f' file: "{get_rel_path(file_target)}" ')
 
+attachments_used = set()
+
 def figure_out_attachment_filename_and_type(attachment_type, html_target, attachment_file_ref):
-    # Why don't we try the filename with the extension first? We only know how to handle
-    # specific types of attachments, and we'll find those trhough trial and error pasting
+    # Why don't we try looking for the filename with the extension first? We only know how to handle
+    # specific types of attachments, and we'll find those through trial and error pasting
     # various extensions back onto the basename, so trying the existing extension first
     # doesn't get us anything except weird special cases that we can't handle.
     subdirectory, html_basename = html_target
-    # We assume all attachment references are relative to the directory of the HTML file.
-    base, __ = os.path.splitext(attachment_file_ref)
-    attachment_filename, content_type = consider_this_attachment_file_candidate(subdirectory, base, attachment_type)
-    if attachment_filename:
-        return attachment_filename, content_type
 
-    base = base[:50]  # this is odd; probably bugs in Takeout or at least weird choices
-    attachment_filename, content_type = consider_this_attachment_file_candidate(subdirectory, base, attachment_type)
-    if attachment_filename:
-        return attachment_filename, content_type
+    for possible_filename in [attachment_file_ref, html_basename]:
+        base, __ = os.path.splitext(possible_filename)
+        # We assume all attachment references are relative to the directory of the HTML file.
+        attachment_filename, content_type = consider_this_attachment_file_candidate(subdirectory, base, attachment_type)
+        if attachment_filename:
+            assert attachment_filename not in attachments_used
+            attachments_used.add(attachment_filename)
+            return attachment_filename, content_type
 
-    base, __ = os.path.splitext(html_basename)
-    attachment_filename, content_type = consider_this_attachment_file_candidate(subdirectory, base, attachment_type)
-    if attachment_filename:
-        return attachment_filename, content_type
-        
-    base = base[:50]  # this is odd; probably bugs in Takeout or at least weird choices
-    attachment_filename, content_type = consider_this_attachment_file_candidate(subdirectory, base, attachment_type)
-    if attachment_filename:
-        return attachment_filename, content_type
+        base = base[:50]  # this is odd; probably bugs in Takeout or at least weird choices
+        attachment_filename, content_type = consider_this_attachment_file_candidate(subdirectory, base, attachment_type)
+        if attachment_filename:
+            # since the filename was truncated, it's possible for different attachments
+            # to end up with the same filename. takeout appears to handle this by appending
+            # the basename with an incrementing counter, so we do the same.
+            if attachment_filename in attachments_used:
+                base, ext = os.path.splitext(attachment_filename)
+                counter = 1
+                while f"{base}({counter}){ext}" in attachments_used:
+                    counter += 1
+                attachment_filename = f"{base}({counter}){ext}"
+            assert attachment_filename not in attachments_used
+            attachments_used.add(attachment_filename)
+            return attachment_filename, content_type
 
     print(f'>> {attachment_type} attachment referenced in HTML file but not found (skipped); partial name: "{get_abs_path((subdirectory, attachment_file_ref))}"')
     print(f'>>    src="{attachment_file_ref}"')
@@ -850,6 +1134,16 @@ def consider_this_attachment_file_candidate(subdirectory, base, attachment_type)
         if os.path.exists(get_rel_path((subdirectory, base + '.mp3'))):
             attachment_filename = base + '.mp3'
             content_type = 'audio/mp3'
+        if os.path.exists(get_rel_path((subdirectory, base + '.amr'))):
+            attachment_filename = base + '.amr'
+            content_type = 'audio/amr'
+    elif attachment_type == ATTACHMENT_TYPE_VIDEO:
+        if os.path.exists(get_rel_path((subdirectory, base + '.3gp'))):
+            attachment_filename = base + '.3gp'
+            content_type = 'video/3gpp'
+        if os.path.exists(get_rel_path((subdirectory, base + '.mp4'))):
+            attachment_filename = base + '.mp4'
+            content_type = 'video/mp4'
     elif attachment_type == ATTACHMENT_TYPE_VCARD:
         if os.path.exists(get_rel_path((subdirectory, base + '.vcf'))):
             attachment_filename = base + '.vcf'
@@ -870,12 +1164,14 @@ def get_vm_transcript(message_elt):
     if not full_text_elt:
         return None
     
-    return BeautifulSoup(full_text_elt.text, 'html.parser').prettify().strip()
+    return BeautifulSoup(full_text_elt.text, 'html.parser').prettify(formatter=FORMATTER).strip()
 
 def get_message_text(message_elt):
     text_elt = message_elt.find('q')
     if not text_elt:
         return None
+    for br in text_elt.find_all("br"):
+        br.replace_with("&#10;")
     return text_elt.text
 
 def get_mms_participant_phone_numbers(html_target, participants_elt):
@@ -1192,255 +1488,6 @@ def get_number_and_name_from_tel_elt_parent(parent_elt):
         if not this_name or is_phone_number(this_name):
             return this_number, None
     return this_number, this_name
-
-# The (optional) contacts file can have these types of entries:
-# 1. some name: some other name          (this is a simple aliasing scheme for contact names)
-# 2. some name: some number              (a degenerate case that is turned into a list)
-# 3. some name: [some list of numbers]   (all of these numbers are acceptable for this contact name; leftmost is preferred)
-# 4. some number: some other number      (if some number is seen, some other number will be used in output)
-class ContactsOracle:
-    def __init__(self, contacts_filename, policy, nanp_heuritics):
-        self._contacts_filename = contacts_filename
-        self._name_to_name = dict()
-        self._number_to_number = dict()
-        self._name_to_numbers = dict()
-        self._number_to_names = dict()
-        self._policy = policy
-        self._nanp_heuristics = nanp_heuritics
-        
-        if not os.path.exists(self._contacts_filename):
-            print('>> No (optional) JSON contacts file', os.path.abspath(self._contacts_filename))
-            return
-        
-        print('>> Reading contacts from JSON contacts file', os.path.abspath(self._contacts_filename))
-        with open(self._contacts_filename) as fp: 
-            parsed_file = json.load(fp)
-        for key, value in parsed_file.items():
-            if is_phone_number(key):
-                self._do_number_entry(key, value)
-            else:
-                self._do_name_entry(key, value)
-
-        print(">> JSON contact configuration counts:")
-        print(f'>> {len(self._name_to_numbers):6} Name-to-number(s) entries')
-        print(f'>> {len(self._name_to_name):6} Name-to-name entries')
-        print(f'>> {len(self._number_to_number):6} Number-to-number entries')
-        print(f'>> {len(self._number_to_names):6} Number-to-names entries (computed)')
-        print(f">> Contact phone number replacement policy is '{self._policy}'")
-
-    def _do_name_entry(self, name, value):
-        if isinstance(value, str):
-            if not is_phone_number(value):
-                # not mapping to a number, so must be an alias
-                self._name_to_name[name] = value
-                return
-            values = [value]  # simple scalar; make it a list
-        elif isinstance(value, list):
-            values = value
-        else:
-            raise Exception(f'"{name}" entry value of type {type(value)} is not a string or a list: {value}\n    in {get_aka_path(self._contacts_filename)}')
-
-        far_future = 2_000_000_000  # a pseudo-Unix timestamp, in seconds, in the distant future
-        for ii in range(len(values)):
-            value = values[ii]
-            if not is_phone_number(value):
-                raise Exception(f'"{name}" entry value of type {type(value)} is not a phone number: {value}\n    in {get_aka_path(self._contacts_filename)}')
-            # (value, timestamp, isconfigured)
-            value = self.apply_nanp_heuristics(value)
-            far_future_iso = unix_to_iso_time(far_future - ii)
-            timestamped_number = (value, far_future_iso, True)
-            values[ii] = timestamped_number
-            self._add_number_to_name_item(name, value)
-        # these are already reverse sorted; just belt and suspenders
-        values.sort(key=itemgetter(1), reverse=True)
-        self._name_to_numbers[name] = values
-        
-    def _add_number_to_name_item(self, name, number):
-        number = self.apply_nanp_heuristics(number)
-        existing = self._number_to_names.get(number, None)
-        if not existing:
-            existing = set()
-            self._number_to_names[number] = existing
-        existing.add(name)  # it's a set, so we don't care if it's duplicate
-        
-    def _do_number_entry(self, number, name):
-        if not isinstance(name, str) or not is_phone_number(name):
-            raise Exception(f'"{number}" entry value of type {type(name)} is not a phone number: {name}\n    in {get_aka_path(self._contacts_filename)}')
-        number = self.apply_nanp_heuristics(number)
-        self._number_to_number[name] = number
-        
-    def is_already_known_pair(self, name, number):
-        if not name or not number:
-            return False
-        number = self.apply_nanp_heuristics(number)
-        existing_list = self._name_to_numbers.get(name, None)
-        if not existing_list:
-            alias_to = self._name_to_name.get(name, None)
-            return self.is_already_known_pair(alias_to, number)
-        for list_item in existing_list:
-            this_number = list_item[0]
-            if this_number == number:
-                return True
-        return False
-        
-    def is_me_number(self, number):
-        names = self._number_to_names.get(number, None)
-        if not names:
-            return False
-        return 'Me' in names
-        
-    # This is really inefficient, but we're banking on the set of contacts being managable
-    def add_discovered_contact(self, name, number, timestamp):
-        # We could ignore any discovered contacts for policy "configured", but we want to 
-        # do proper countihg and give messages to the user, etc.
-        if is_phone_number(name):
-            # it's a number that pairs with itself instead of a name, so ignore it.
-            return False
-        number = self.apply_nanp_heuristics(number)
-        existing_list = self._name_to_numbers.get(name, None)
-        if not existing_list:
-            existing_list = list()
-            self._name_to_numbers[name] = existing_list
-        found_it = False
-        # (value, timestamp, isconfigured)
-        iso_timestamp = unix_to_iso_time(timestamp)
-        new_tuple = (number, iso_timestamp, False)
-        for ii in range(len(existing_list)):
-            this_tuple = existing_list[ii]
-            this_number, this_timestamp, this_isconfigured = this_tuple
-            if this_number == number:
-                found_it = True
-                if iso_timestamp > this_timestamp:
-                    # it's a newer discovery
-                    # we only want to update discovered items, but the timestamps of the configured items 
-                    # will already deal with that because configured timestamps are artificially far future
-                    existing_list[ii] = new_tuple
-                break
-
-        if not found_it:
-            existing_list.append(new_tuple)
-            self._add_number_to_name_item(name, number)
-            
-        existing_list.sort(key=itemgetter(1), reverse=True)
-        
-        return not found_it
-
-    # The strategy for this method and the next is to first do a lookup by the 
-    # passed in key. If that doesn't yield a result, see if the key is an 
-    # alias and try again with the pointed-to key. We'll eventually get a hit
-    # or reach the end of the chain.
-    # The argument "number" is typically None, but if it does have a value
-    # we'll see if we can do better, where "better" is according to policy.
-    def get_number_by_name(self, name, number):
-        if not name:                            return number  # only happens by recursion
-        number = self.apply_nanp_heuristics(number)
-        if   self._policy == POLICY_ASIS:       return self._policy_asis(name, number)
-        elif self._policy == POLICY_CONFIGURED: return self._policy_configured(name, number)
-        elif self._policy == POLICY_NEWEST:     return self._policy_newest(name)
-        else:
-            raise Exception(f'We don''t recognize this number policy: "{self._policy}". It''s probably a bug in the script.')
-    
-    def _policy_asis(self, name, number):
-        if number:
-            return number
-        else:
-            try:
-                self._policy = POLICY_NEWEST
-                return self.get_number_by_name(name, number)
-            finally:
-                self._policy = POLICY_ASIS                    
-        
-    def _policy_newest(self, name):
-        candidate_list = self._name_to_numbers.get(name, None)
-        if candidate_list:
-            # candidate_list will be a list with the first item the preferred number
-            this_number, this_timestamp, this_isconfigured = candidate_list[0]
-            return this_number
-        else:
-            aliased_to = self._name_to_name.get(name, None)
-            return self.get_number_by_name(aliased_to, None)
-        
-    def _policy_configured(self, name, number):
-        value = None
-        candidate_list = self._name_to_numbers.get(name, None)
-        if candidate_list:
-            # if no candidate number was passed in, return the best configured number
-            if not number:
-                this_number, this_timestamp, this_isconfigured = candidate_list[0]
-                if this_isconfigured:
-                    value = this_number
-            else:
-                # a number was passed in, so vet it
-                for this_number, this_timestamp, this_isconfigured in candidate_list:
-                    if this_isconfigured and number == this_number:
-                        value = this_number
-                        break
-    
-        if value:
-            return value
-        else:
-            aliased_to = self._name_to_name.get(name, None)
-            return self.get_number_by_name(aliased_to, None)
-
-    def get_names_by_number(self, number):
-        if not number:
-            return None
-        number = self.apply_nanp_heuristics(number)
-        value = self._number_to_names.get(number, None)
-        if value:
-            return value
-
-        return self.get_names_by_number(self._number_to_number.get(number, None))
-
-    def get_best_number(self, number):
-        number = self.apply_nanp_heuristics(number)
-        if self._policy == POLICY_ASIS:
-            return number
-        best_timestamp = '0000'
-        best_number = None
-        names = self.get_names_by_number(number)
-        if names:
-            for name in names:
-                # iterate over all the names, choosing the latest timestamp from among all of them
-                tuples = self._name_to_numbers.get(name, None)
-                if tuples:
-                    this_number, this_timestamp, this_isconfigured = tuples[0]
-                    if self._policy == POLICY_CONFIGURED and not this_isconfigured:
-                        continue
-                    if this_timestamp > best_timestamp:
-                        best_timestamp = this_timestamp
-                        best_number = this_number
-            if best_number:
-                return best_number
-        else:
-            return number
-        
-    def apply_nanp_heuristics(self, number):
-        if not self._nanp_heuristics or not number:
-            return number
-        
-        if len(number) == 10 and not number.startswith('1'):
-            return '+1' + number
-        elif len(number) == 11 and number.startswith('1'):
-            return '+' + number
-        else:
-            # This is unlikely to work out
-            return number
-        
-    def dump(self):
-        pp = pprint.PrettyPrinter(indent=2, width=132)
-        print()
-        print("Mappings of names-to-numbers (configured True, discovered False):")
-        pp.pprint(self._name_to_numbers)
-        print()
-        print("Mappings of numbers-to-names (computed reverse mappings)")
-        pp.pprint(self._number_to_names)
-        print()
-        print("Mappings of names-to-names (configured name aliases):")
-        pp.pprint(self._name_to_name)
-        print()
-        print("Mappings of numbers-to-numbers (configured number aliases):")
-        pp.pprint(self._number_to_number)
 
 main()
 
